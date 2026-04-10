@@ -1,0 +1,24 @@
+{
+  "name": "GitHub Release Notifier",
+  "description": "Subscribe to email notifications about new GitHub repository releases.",
+  "buildpacks": [
+    { "url": "heroku/go" }
+  ],
+  "addons": [
+    "heroku-postgresql:essential-0",
+    "heroku-redis:mini"
+  ],
+  "env": {
+    "MAILGUN_DOMAIN": { "required": true },
+    "MAILGUN_API_KEY": { "required": true },
+    "MAILGUN_FROM": { "required": true },
+    "MAILGUN_API_BASE": { "value": "https://api.eu.mailgun.net/v3" },
+    "GITHUB_TOKEN": { "required": false },
+    "API_KEY": { "required": false },
+    "CORS_ORIGINS": { "value": "https://release-notifier.michaeltal.dev" },
+    "OTEL_ENABLED": { "value": "false" },
+    "SCAN_INTERVAL": { "value": "5m" },
+    "NOTIFICATION_WORKERS": { "value": "10" },
+    "BASE_URL": { "required": true }
+  }
+}

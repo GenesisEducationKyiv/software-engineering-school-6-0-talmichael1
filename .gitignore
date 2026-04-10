@@ -1,0 +1,9 @@
+.DS_Store
+bin/
+*.exe
+*.test
+*.out
+.env
+!.env.example
+vendor/
+.claude

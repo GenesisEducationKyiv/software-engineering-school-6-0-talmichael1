@@ -1,0 +1,52 @@
+syntax = "proto3";
+
+package subscription;
+
+option go_package = "github-release-notifier/internal/grpc/proto";
+
+service SubscriptionService {
+  rpc Subscribe(SubscribeRequest) returns (SubscribeResponse);
+  rpc Confirm(ConfirmRequest) returns (ConfirmResponse);
+  rpc Unsubscribe(UnsubscribeRequest) returns (UnsubscribeResponse);
+  rpc ListSubscriptions(ListRequest) returns (ListResponse);
+}
+
+message SubscribeRequest {
+  string email = 1;
+  string repo = 2;
+}
+
+message SubscribeResponse {
+  string message = 1;
+}
+
+message ConfirmRequest {
+  string token = 1;
+}
+
+message ConfirmResponse {
+  string message = 1;
+}
+
+message UnsubscribeRequest {
+  string token = 1;
+}
+
+message UnsubscribeResponse {
+  string message = 1;
+}
+
+message ListRequest {
+  string email = 1;
+}
+
+message ListResponse {
+  repeated SubscriptionItem subscriptions = 1;
+}
+
+message SubscriptionItem {
+  string email = 1;
+  string repo = 2;
+  bool confirmed = 3;
+  string last_seen_tag = 4;
+}
