@@ -1,4 +1,4 @@
-.PHONY: build run test lint docker-up docker-down proto clean
+.PHONY: build run test test-integration lint docker-up docker-down proto clean
 
 build:
 	go build -o bin/server ./cmd/server
@@ -8,6 +8,9 @@ run: build
 
 test:
 	go test -race -count=1 ./...
+
+test-integration:
+	go test -race -count=1 -tags=integration ./internal/repository/...
 
 lint:
 	golangci-lint run ./...
