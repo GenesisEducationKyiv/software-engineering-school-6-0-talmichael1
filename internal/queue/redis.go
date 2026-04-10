@@ -14,7 +14,7 @@ import (
 const (
 	pendingQueue = "notifications:pending"
 	dedupPrefix  = "notified:"
-	dedupTTL     = 7 * 24 * time.Hour // 7 days
+	dedupTTL     = 1 * 24 * time.Hour // 1 day
 )
 
 // NotificationQueue manages the Redis-backed notification job queue.
@@ -70,21 +70,20 @@ func (q *NotificationQueue) Dequeue(ctx context.Context, timeout time.Duration) 
 	return &job, nil
 }
 
-// MarkSent records that a notification was sent, preventing duplicate delivery.
-// Returns true if this is the first time (not a duplicate).
-func (q *NotificationQueue) MarkSent(ctx context.Context, subscriptionID int64, tag string) (bool, error) {
+// IsSent checks whether a notification has already been delivered.
+func (q *NotificationQueue) IsSent(ctx context.Context, subscriptionID int64, tag string) (bool, error) {
 	key := fmt.Sprintf("%s%d:%s", dedupPrefix, subscriptionID, tag)
-	_, err := q.rdb.SetArgs(ctx, key, "1", redis.SetArgs{
-		TTL:  dedupTTL,
-		Mode: "NX",
-	}).Result()
-	if err == redis.Nil {
-		return false, nil
-	}
+	exists, err := q.rdb.Exists(ctx, key).Result()
 	if err != nil {
-		return false, fmt.Errorf("setting dedup key: %w", err)
+		return false, fmt.Errorf("checking dedup key: %w", err)
 	}
-	return true, nil
+	return exists > 0, nil
+}
+
+// MarkSent records that a notification was sent, preventing duplicate delivery.
+func (q *NotificationQueue) MarkSent(ctx context.Context, subscriptionID int64, tag string) error {
+	key := fmt.Sprintf("%s%d:%s", dedupPrefix, subscriptionID, tag)
+	return q.rdb.Set(ctx, key, "1", dedupTTL).Err()
 }
 
 // Requeue puts a failed job back into the pending queue for retry.

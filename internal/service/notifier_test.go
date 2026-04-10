@@ -35,15 +35,19 @@ func (m *mockJobQueue) Dequeue(ctx context.Context, timeout time.Duration) (*dom
 	return job, nil
 }
 
-func (m *mockJobQueue) MarkSent(ctx context.Context, subscriptionID int64, tag string) (bool, error) {
+func (m *mockJobQueue) IsSent(ctx context.Context, subscriptionID int64, tag string) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	key := fmt.Sprintf("%d:%s", subscriptionID, tag)
-	if m.sent[key] {
-		return false, nil
-	}
+	return m.sent[key], nil
+}
+
+func (m *mockJobQueue) MarkSent(ctx context.Context, subscriptionID int64, tag string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key := fmt.Sprintf("%d:%s", subscriptionID, tag)
 	m.sent[key] = true
-	return true, nil
+	return nil
 }
 
 func (m *mockJobQueue) Requeue(ctx context.Context, job domain.NotificationJob) error {
@@ -174,15 +178,41 @@ func TestNotifier_ProcessJob_MaxRetries(t *testing.T) {
 	}
 }
 
-func TestNotifier_ProcessJob_DedupError(t *testing.T) {
-	q := &mockJobQueue{
-		sent: make(map[string]bool),
+func TestNotifier_ProcessJob_MarkSentError(t *testing.T) {
+	q := &errMarkSentQueue{
+		markErr: fmt.Errorf("redis unavailable"),
 	}
-	// Override MarkSent to return an error.
-	markSentErr := fmt.Errorf("redis unavailable")
-	origMarkSent := q.MarkSent
-	_ = origMarkSent
 
+	var sent bool
+	releaseSender := &releaseEmailMock{
+		sendFn: func(ctx context.Context, to, repo, tag, releaseURL, unsubURL string) error {
+			sent = true
+			return nil
+		},
+	}
+
+	notifier := NewNotifier(q, releaseSender, "http://localhost:8080", 1)
+
+	job := &domain.NotificationJob{
+		SubscriptionID: 1,
+		Email:          "user@example.com",
+		Repo:           "golang/go",
+		Tag:            "go1.22.0",
+		UnsubToken:     "unsub123",
+	}
+
+	// MarkSent failing should not cause processJob to return an error —
+	// the email was already delivered, so we log and move on.
+	err := notifier.processJob(context.Background(), job)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !sent {
+		t.Fatal("expected email to be sent despite MarkSent failure")
+	}
+}
+
+func TestNotifier_ProcessJob_DedupError(t *testing.T) {
 	releaseSender := &releaseEmailMock{
 		sendFn: func(ctx context.Context, to, repo, tag, releaseURL, unsubURL string) error {
 			t.Fatal("should not send when dedup check fails")
@@ -190,7 +220,7 @@ func TestNotifier_ProcessJob_DedupError(t *testing.T) {
 		},
 	}
 
-	notifier := NewNotifier(&errMarkSentQueue{err: markSentErr}, releaseSender, "http://localhost:8080", 1)
+	notifier := NewNotifier(&errIsSentQueue{err: fmt.Errorf("redis unavailable")}, releaseSender, "http://localhost:8080", 1)
 
 	job := &domain.NotificationJob{
 		SubscriptionID: 1,
@@ -202,20 +232,41 @@ func TestNotifier_ProcessJob_DedupError(t *testing.T) {
 
 	err := notifier.processJob(context.Background(), job)
 	if err == nil {
-		t.Fatal("expected error when MarkSent fails")
+		t.Fatal("expected error when IsSent fails")
 	}
 }
 
-// errMarkSentQueue is a mock queue that always fails on MarkSent.
-type errMarkSentQueue struct {
+// errIsSentQueue is a mock queue that always fails on IsSent.
+type errIsSentQueue struct {
 	err error
+}
+
+func (m *errIsSentQueue) Dequeue(ctx context.Context, timeout time.Duration) (*domain.NotificationJob, error) {
+	return nil, nil
+}
+func (m *errIsSentQueue) IsSent(ctx context.Context, subscriptionID int64, tag string) (bool, error) {
+	return false, m.err
+}
+func (m *errIsSentQueue) MarkSent(ctx context.Context, subscriptionID int64, tag string) error {
+	return nil
+}
+func (m *errIsSentQueue) Requeue(ctx context.Context, job domain.NotificationJob) error {
+	return nil
+}
+
+// errMarkSentQueue is a mock queue where IsSent works but MarkSent fails.
+type errMarkSentQueue struct {
+	markErr error
 }
 
 func (m *errMarkSentQueue) Dequeue(ctx context.Context, timeout time.Duration) (*domain.NotificationJob, error) {
 	return nil, nil
 }
-func (m *errMarkSentQueue) MarkSent(ctx context.Context, subscriptionID int64, tag string) (bool, error) {
-	return false, m.err
+func (m *errMarkSentQueue) IsSent(ctx context.Context, subscriptionID int64, tag string) (bool, error) {
+	return false, nil
+}
+func (m *errMarkSentQueue) MarkSent(ctx context.Context, subscriptionID int64, tag string) error {
+	return m.markErr
 }
 func (m *errMarkSentQueue) Requeue(ctx context.Context, job domain.NotificationJob) error {
 	return nil

@@ -15,7 +15,8 @@ const maxRetries = 5
 // JobDequeuer reads notification jobs from the queue.
 type JobDequeuer interface {
 	Dequeue(ctx context.Context, timeout time.Duration) (*domain.NotificationJob, error)
-	MarkSent(ctx context.Context, subscriptionID int64, tag string) (bool, error)
+	IsSent(ctx context.Context, subscriptionID int64, tag string) (bool, error)
+	MarkSent(ctx context.Context, subscriptionID int64, tag string) error
 	Requeue(ctx context.Context, job domain.NotificationJob) error
 }
 
@@ -82,12 +83,12 @@ func (n *Notifier) worker(ctx context.Context, id int) {
 }
 
 func (n *Notifier) processJob(ctx context.Context, job *domain.NotificationJob) error {
-	// Deduplication: skip if we've already sent this notification.
-	isNew, err := n.queue.MarkSent(ctx, job.SubscriptionID, job.Tag)
+	// Check dedup: skip if we've already sent this notification.
+	sent, err := n.queue.IsSent(ctx, job.SubscriptionID, job.Tag)
 	if err != nil {
 		return fmt.Errorf("checking dedup: %w", err)
 	}
-	if !isNew {
+	if sent {
 		slog.Debug("duplicate notification skipped",
 			"subscription_id", job.SubscriptionID,
 			"tag", job.Tag)
@@ -106,6 +107,14 @@ func (n *Notifier) processJob(ctx context.Context, job *domain.NotificationJob) 
 			return n.queue.Requeue(ctx, *job)
 		}
 		return fmt.Errorf("max retries exceeded for %s: %w", job.Email, err)
+	}
+
+	// Mark as sent only after successful delivery.
+	if err := n.queue.MarkSent(ctx, job.SubscriptionID, job.Tag); err != nil {
+		slog.Error("failed to mark notification as sent (email was delivered)",
+			"subscription_id", job.SubscriptionID,
+			"tag", job.Tag,
+			"error", err)
 	}
 
 	slog.Info("notification sent",

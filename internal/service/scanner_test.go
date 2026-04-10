@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -11,10 +12,17 @@ import (
 )
 
 type mockQueue struct {
+	mu           sync.Mutex
 	enqueuedJobs []domain.NotificationJob
+	enqueueFn    func(ctx context.Context, jobs []domain.NotificationJob) error
 }
 
 func (m *mockQueue) EnqueueBatch(ctx context.Context, jobs []domain.NotificationJob) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.enqueueFn != nil {
+		return m.enqueueFn(ctx, jobs)
+	}
 	m.enqueuedJobs = append(m.enqueuedJobs, jobs...)
 	return nil
 }
@@ -59,7 +67,7 @@ func TestScanner_NewRelease(t *testing.T) {
 		},
 	}
 
-	scanner := NewScanner(scannerRepoRepo, subRepo, gh, q, "http://localhost:8080", time.Minute)
+	scanner := NewScanner(scannerRepoRepo, subRepo, gh, q, "http://localhost:8080", time.Minute, 1)
 	scanner.scan(context.Background())
 
 	if len(q.enqueuedJobs) != 2 {
@@ -93,7 +101,7 @@ func TestScanner_NoNewRelease(t *testing.T) {
 		},
 	}
 
-	scanner := NewScanner(scannerRepoRepo, &mockSubRepo{}, gh, q, "http://localhost:8080", time.Minute)
+	scanner := NewScanner(scannerRepoRepo, &mockSubRepo{}, gh, q, "http://localhost:8080", time.Minute, 1)
 	scanner.scan(context.Background())
 
 	if len(q.enqueuedJobs) != 0 {
@@ -123,7 +131,7 @@ func TestScanner_NoReleases(t *testing.T) {
 		},
 	}
 
-	scanner := NewScanner(scannerRepoRepo, &mockSubRepo{}, gh, q, "http://localhost:8080", time.Minute)
+	scanner := NewScanner(scannerRepoRepo, &mockSubRepo{}, gh, q, "http://localhost:8080", time.Minute, 1)
 	scanner.scan(context.Background())
 
 	if len(q.enqueuedJobs) != 0 {
@@ -151,7 +159,7 @@ func TestScanner_GitHubError(t *testing.T) {
 		},
 	}
 
-	scanner := NewScanner(scannerRepoRepo, &mockSubRepo{}, gh, q, "http://localhost:8080", time.Minute)
+	scanner := NewScanner(scannerRepoRepo, &mockSubRepo{}, gh, q, "http://localhost:8080", time.Minute, 1)
 	scanner.scan(context.Background())
 
 	if len(q.enqueuedJobs) != 0 {
@@ -168,7 +176,7 @@ func TestScanner_ListReposError(t *testing.T) {
 		},
 	}
 
-	scanner := NewScanner(scannerRepoRepo, &mockSubRepo{}, &mockGitHub{}, q, "http://localhost:8080", time.Minute)
+	scanner := NewScanner(scannerRepoRepo, &mockSubRepo{}, &mockGitHub{}, q, "http://localhost:8080", time.Minute, 1)
 	scanner.scan(context.Background())
 
 	if len(q.enqueuedJobs) != 0 {
@@ -199,11 +207,121 @@ func TestScanner_ContextCancelled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // cancel immediately
 
-	scanner := NewScanner(scannerRepoRepo, &mockSubRepo{}, gh, q, "http://localhost:8080", time.Minute)
+	scanner := NewScanner(scannerRepoRepo, &mockSubRepo{}, gh, q, "http://localhost:8080", time.Minute, 1)
 	scanner.scan(ctx)
 
 	if callCount > 0 {
 		t.Fatalf("expected no GitHub calls after cancel, got %d", callCount)
+	}
+}
+
+func TestScanner_ListSubscribersError(t *testing.T) {
+	q := &mockQueue{}
+
+	scannerRepoRepo := &scannerMockRepoRepo{
+		listFn: func(ctx context.Context) ([]domain.Repository, error) {
+			return []domain.Repository{
+				{ID: 1, Owner: "golang", Name: "go", LastSeenTag: "go1.21.0"},
+			}, nil
+		},
+	}
+
+	subRepo := &mockSubRepo{
+		listConfirmedFn: func(ctx context.Context, repoID int64) ([]domain.Subscription, error) {
+			return nil, fmt.Errorf("database unavailable")
+		},
+	}
+
+	gh := &mockGitHub{
+		getLatestRelFn: func(ctx context.Context, owner, repo string) (*domain.Release, error) {
+			return &domain.Release{TagName: "go1.22.0", Name: "Go 1.22"}, nil
+		},
+	}
+
+	scanner := NewScanner(scannerRepoRepo, subRepo, gh, q, "http://localhost:8080", time.Minute, 1)
+	scanner.scan(context.Background())
+
+	if len(q.enqueuedJobs) != 0 {
+		t.Fatalf("expected 0 enqueued jobs, got %d", len(q.enqueuedJobs))
+	}
+}
+
+func TestScanner_EnqueueError(t *testing.T) {
+	q := &mockQueue{}
+	q.enqueueFn = func(ctx context.Context, jobs []domain.NotificationJob) error {
+		return fmt.Errorf("redis unavailable")
+	}
+
+	scannerRepoRepo := &scannerMockRepoRepo{
+		listFn: func(ctx context.Context) ([]domain.Repository, error) {
+			return []domain.Repository{
+				{ID: 1, Owner: "golang", Name: "go", LastSeenTag: "go1.21.0"},
+			}, nil
+		},
+	}
+
+	subRepo := &mockSubRepo{
+		listConfirmedFn: func(ctx context.Context, repoID int64) ([]domain.Subscription, error) {
+			return []domain.Subscription{
+				{ID: 10, Email: "a@b.com", UnsubscribeToken: "tok1"},
+			}, nil
+		},
+	}
+
+	gh := &mockGitHub{
+		getLatestRelFn: func(ctx context.Context, owner, repo string) (*domain.Release, error) {
+			return &domain.Release{TagName: "go1.22.0", Name: "Go 1.22"}, nil
+		},
+	}
+
+	scanner := NewScanner(scannerRepoRepo, subRepo, gh, q, "http://localhost:8080", time.Minute, 1)
+	scanner.scan(context.Background())
+
+	// Enqueue failed, so no jobs should be recorded.
+	if len(q.enqueuedJobs) != 0 {
+		t.Fatalf("expected 0 enqueued jobs, got %d", len(q.enqueuedJobs))
+	}
+}
+
+func TestScanner_UpdateTagError(t *testing.T) {
+	q := &mockQueue{}
+	var tagUpdated bool
+
+	scannerRepoRepo := &scannerMockRepoRepo{
+		listFn: func(ctx context.Context) ([]domain.Repository, error) {
+			return []domain.Repository{
+				{ID: 1, Owner: "golang", Name: "go", LastSeenTag: "go1.21.0"},
+			}, nil
+		},
+		updateTagFn: func(ctx context.Context, id int64, tag string) error {
+			tagUpdated = true
+			return fmt.Errorf("database unavailable")
+		},
+	}
+
+	subRepo := &mockSubRepo{
+		listConfirmedFn: func(ctx context.Context, repoID int64) ([]domain.Subscription, error) {
+			return []domain.Subscription{
+				{ID: 10, Email: "a@b.com", UnsubscribeToken: "tok1"},
+			}, nil
+		},
+	}
+
+	gh := &mockGitHub{
+		getLatestRelFn: func(ctx context.Context, owner, repo string) (*domain.Release, error) {
+			return &domain.Release{TagName: "go1.22.0", Name: "Go 1.22"}, nil
+		},
+	}
+
+	scanner := NewScanner(scannerRepoRepo, subRepo, gh, q, "http://localhost:8080", time.Minute, 1)
+	scanner.scan(context.Background())
+
+	// Jobs were enqueued but tag update failed — at-least-once delivery.
+	if len(q.enqueuedJobs) != 1 {
+		t.Fatalf("expected 1 enqueued job, got %d", len(q.enqueuedJobs))
+	}
+	if !tagUpdated {
+		t.Fatal("expected UpdateLastSeenTag to be called")
 	}
 }
 

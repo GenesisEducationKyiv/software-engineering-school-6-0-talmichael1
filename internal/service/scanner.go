@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github-release-notifier/internal/domain"
@@ -25,6 +26,7 @@ type Scanner struct {
 	queue    NotificationEnqueuer
 	baseURL  string
 	interval time.Duration
+	workers  int
 }
 
 func NewScanner(
@@ -34,7 +36,11 @@ func NewScanner(
 	queue NotificationEnqueuer,
 	baseURL string,
 	interval time.Duration,
+	workers int,
 ) *Scanner {
+	if workers < 1 {
+		workers = 1
+	}
 	return &Scanner{
 		repoRepo: repoRepo,
 		subRepo:  subRepo,
@@ -42,6 +48,7 @@ func NewScanner(
 		queue:    queue,
 		baseURL:  baseURL,
 		interval: interval,
+		workers:  workers,
 	}
 }
 
@@ -70,18 +77,33 @@ func (s *Scanner) scan(ctx context.Context) {
 		slog.Error("scanner: listing repos", "error", err)
 		return
 	}
-	slog.Info("scanner: checking repositories", "count", len(repos))
+	slog.Info("scanner: checking repositories", "count", len(repos), "workers", s.workers)
+
+	ch := make(chan domain.Repository)
+	var wg sync.WaitGroup
+
+	for range s.workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for repo := range ch {
+				if err := s.checkRepo(ctx, repo); err != nil {
+					slog.Error("scanner: checking repo",
+						"repo", repo.FullName(),
+						"error", err)
+				}
+			}
+		}()
+	}
 
 	for _, repo := range repos {
 		if ctx.Err() != nil {
-			return
+			break
 		}
-		if err := s.checkRepo(ctx, repo); err != nil {
-			slog.Error("scanner: checking repo",
-				"repo", repo.FullName(),
-				"error", err)
-		}
+		ch <- repo
 	}
+	close(ch)
+	wg.Wait()
 }
 
 func (s *Scanner) checkRepo(ctx context.Context, repo domain.Repository) error {

@@ -15,7 +15,7 @@ A Go service that allows users to subscribe to email notifications about new rel
 The application is a monolith with three logical components running within a single process:
 
 - **API** — HTTP (Gin) and gRPC servers handling subscription management
-- **Scanner** — Background worker that periodically polls GitHub for new releases
+- **Scanner** — Background worker pool that periodically polls GitHub for new releases in parallel
 - **Notifier** — Worker pool that consumes a Redis queue and sends emails
 
 ### Why no API rate limiting?
@@ -31,10 +31,11 @@ Redis lists provide O(1) push/pop with automatic memory reclaim. LPUSH/BRPOP is 
 ### How the scan → notify pipeline works
 
 1. The scanner fetches all repositories that have at least one **confirmed** subscriber (a single SQL JOIN — repos with zero confirmed subs are never checked)
-2. For each repo, it calls `GetLatestRelease` via the cached GitHub client (Redis, 10min TTL). 10,000 subscribers to `golang/go` = **1 GitHub API call**, not 10,000
-3. If `release.TagName != repo.LastSeenTag`, it builds a `NotificationJob` per subscriber and enqueues them all to Redis in a single pipeline (`LPUSH`)
-4. `last_seen_tag` in PostgreSQL is updated **only after** successful enqueue — this guarantees at-least-once delivery. If the process crashes between enqueue and tag update, the next scan re-detects the release
-5. Notifier workers (`BRPOP`) deduplicate via `SETNX` (`notified:{subscription_id}:{tag}`, TTL 7 days) before sending, preventing duplicate emails even on re-enqueue
+2. Repositories are distributed across a configurable worker pool (`SCAN_WORKERS`, default 5) via a channel — each repo is checked by exactly one worker, and all external clients (`go-redis`, `sqlx.DB`) are concurrency-safe
+3. Each worker calls `GetLatestRelease` via the cached GitHub client (Redis, 10min TTL). 10,000 subscribers to `golang/go` = **1 GitHub API call**, not 10,000
+4. If `release.TagName != repo.LastSeenTag`, it builds a `NotificationJob` per subscriber and enqueues them all to Redis in a single pipeline (`LPUSH`)
+5. `last_seen_tag` in PostgreSQL is updated **only after** successful enqueue — this guarantees at-least-once delivery. If the process crashes between enqueue and tag update, the next scan re-detects the release
+6. Notifier workers (`BRPOP`) use a two-phase deduplication strategy: **check** (`EXISTS`) before sending to skip known duplicates, then **mark** (`SET` with TTL) after successful delivery. This prevents both lost notifications (mark-before-send) and duplicate emails (mark-after-send covers 99.9% of cases)
 
 ### Why seed `last_seen_tag` on subscribe?
 
@@ -159,6 +160,7 @@ All configuration is done via environment variables:
 | `GRPC_PORT` | No | `9090` | gRPC server port |
 | `BASE_URL` | No | `http://localhost:8080` | Base URL for email links |
 | `SCAN_INTERVAL` | No | `5m` | How often to check for new releases |
+| `SCAN_WORKERS` | No | `5` | Number of parallel scanner workers |
 | `NOTIFICATION_WORKERS` | No | `10` | Number of parallel email workers |
 | `API_KEY` | No | — | API key for `X-API-Key` header auth (disabled if empty) |
 | `DEBUG` | No | `false` | Debug logging; also activates console email backend |
@@ -194,18 +196,18 @@ All configuration is done via environment variables:
 
 ```bash
 # Unit tests
-go test -race ./...
+make test
 
 # Integration tests (requires PostgreSQL)
 DATABASE_URL="postgres://user:pass@localhost:5432/test_db?sslmode=disable" \
-  go test -race -p 1 -tags=integration ./internal/integration/... ./internal/repository/postgres/...
+  make test-integration
 ```
 
 ### Unit Tests (55 tests)
 
 - **Subscription service** — validation, subscribe/confirm/unsubscribe flows, email failure rollback, rate limit propagation, tag seeding
-- **Scanner** — new release detection, no change, no releases, GitHub errors, context cancellation
-- **Notifier** — job processing, deduplication, retry logic, max retries, dedup errors
+- **Scanner** — new release detection, no change, no releases, GitHub errors, context cancellation, enqueue errors, tag update errors, subscriber listing errors
+- **Notifier** — job processing, two-phase deduplication, retry logic, max retries, dedup check errors, mark-sent errors
 - **Cleanup** — stale subscription deletion, error handling
 - **GitHub client** — rate limit header parsing, 429 retry, auth header, response decoding
 - **HTTP handlers** — request validation, correct status codes for all Swagger-defined error paths

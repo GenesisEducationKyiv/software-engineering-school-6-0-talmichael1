@@ -122,7 +122,7 @@ func main() {
 	notifQueue := queue.NewNotificationQueue(rdb)
 
 	subscriptionSvc := service.NewSubscriptionService(subStore, repoStore, cachedGH, mailer, cfg.BaseURL)
-	scanner := service.NewScanner(repoStore, subStore, cachedGH, notifQueue, cfg.BaseURL, cfg.ScanInterval)
+	scanner := service.NewScanner(repoStore, subStore, cachedGH, notifQueue, cfg.BaseURL, cfg.ScanInterval, cfg.ScanWorkers)
 	notifier := service.NewNotifier(notifQueue, mailer, cfg.BaseURL, cfg.NotificationWorkers)
 	cleanup := service.NewCleanup(subStore)
 
