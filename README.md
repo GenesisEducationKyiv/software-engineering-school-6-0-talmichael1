@@ -203,17 +203,18 @@ DATABASE_URL="postgres://user:pass@localhost:5432/test_db?sslmode=disable" \
   make test-integration
 ```
 
-### Unit Tests (55 tests)
+### Unit Tests
 
 - **Subscription service** — validation, subscribe/confirm/unsubscribe flows, email failure rollback, rate limit propagation, tag seeding
 - **Scanner** — new release detection, no change, no releases, GitHub errors, context cancellation, enqueue errors, tag update errors, subscriber listing errors
 - **Notifier** — job processing, two-phase deduplication, retry logic, max retries, dedup check errors, mark-sent errors
 - **Cleanup** — stale subscription deletion, error handling
 - **GitHub client** — rate limit header parsing, 429 retry, auth header, response decoding
+- **Cached GitHub client** (Redis) — cache hits/misses, TTL behavior, caching of 200/404, no caching for 429/transient errors, key separation
 - **HTTP handlers** — request validation, correct status codes for all Swagger-defined error paths
 - **gRPC server** — all RPCs with error mapping to gRPC status codes
 
-### Integration Tests (21 tests)
+### Integration Tests
 
 End-to-end tests hitting a real PostgreSQL database:
 
