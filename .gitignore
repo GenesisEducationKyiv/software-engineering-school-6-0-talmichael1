@@ -1,5 +1,6 @@
 .DS_Store
 bin/
+/server
 *.exe
 *.test
 *.out
