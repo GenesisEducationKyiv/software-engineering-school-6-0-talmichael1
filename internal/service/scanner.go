@@ -8,7 +8,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+
 	"github-release-notifier/internal/domain"
+	"github-release-notifier/internal/metrics"
 	"github-release-notifier/internal/repository"
 )
 
@@ -72,6 +75,14 @@ func (s *Scanner) Run(ctx context.Context) {
 }
 
 func (s *Scanner) scan(ctx context.Context) {
+	metrics.ScannerRuns.Inc()
+	timer := prometheus.NewTimer(metrics.ScannerDuration)
+	defer timer.ObserveDuration()
+
+	if n, err := s.subRepo.CountConfirmed(ctx); err == nil {
+		metrics.ActiveSubscriptions.Set(float64(n))
+	}
+
 	repos, err := s.repoRepo.ListWithActiveSubscriptions(ctx)
 	if err != nil {
 		slog.Error("scanner: listing repos", "error", err)
@@ -146,6 +157,7 @@ func (s *Scanner) checkRepo(ctx context.Context, repo domain.Repository) error {
 	if err := s.queue.EnqueueBatch(ctx, jobs); err != nil {
 		return fmt.Errorf("enqueuing notifications: %w", err)
 	}
+	metrics.NotificationsEnqueued.Add(float64(len(jobs)))
 
 	// Update the tag only after successful enqueue to guarantee at-least-once delivery.
 	if err := s.repoRepo.UpdateLastSeenTag(ctx, repo.ID, release.TagName); err != nil {

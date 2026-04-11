@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github-release-notifier/internal/domain"
+	"github-release-notifier/internal/metrics"
 	"github-release-notifier/internal/repository"
 )
 
@@ -121,6 +122,7 @@ func (s *SubscriptionService) Subscribe(ctx context.Context, emailAddr, repoFull
 		_ = s.subRepo.Delete(ctx, sub.ID) //nolint:errcheck // best-effort rollback
 		return fmt.Errorf("sending confirmation email: %w", err)
 	}
+	metrics.ConfirmationEmailsSent.Inc()
 	return nil
 }
 

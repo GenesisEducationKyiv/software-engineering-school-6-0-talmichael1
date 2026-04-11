@@ -66,6 +66,7 @@ func (m *mockSubRepo) ListConfirmedByRepoID(ctx context.Context, repoID int64) (
 func (m *mockSubRepo) DeleteUnconfirmedOlderThan(_ context.Context, _ time.Duration) (int64, error) {
 	return 0, nil
 }
+func (m *mockSubRepo) CountConfirmed(_ context.Context) (int64, error) { return 0, nil }
 
 type mockRepoRepo struct {
 	getOrCreateFn func(ctx context.Context, owner, name string) (*domain.Repository, error)

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github-release-notifier/internal/domain"
+	"github-release-notifier/internal/metrics"
 )
 
 const baseURL = "https://api.github.com"
@@ -78,6 +79,7 @@ func (c *Client) doGet(ctx context.Context, url string) ([]byte, error) {
 		}
 
 		c.updateRateLimit(resp)
+		metrics.GitHubAPIRequests.WithLabelValues(strconv.Itoa(resp.StatusCode)).Inc()
 		body, readErr := io.ReadAll(resp.Body)
 		_ = resp.Body.Close()
 		if readErr != nil {

@@ -95,6 +95,13 @@ func (s *SubscriptionStore) ListConfirmedByRepoID(ctx context.Context, repoID in
 	return subs, err
 }
 
+func (s *SubscriptionStore) CountConfirmed(ctx context.Context) (int64, error) {
+	var n int64
+	err := s.db.GetContext(ctx, &n,
+		`SELECT COUNT(*) FROM subscriptions WHERE confirmed = TRUE`)
+	return n, err
+}
+
 func (s *SubscriptionStore) DeleteUnconfirmedOlderThan(ctx context.Context, age time.Duration) (int64, error) {
 	cutoff := time.Now().UTC().Add(-age)
 	result, err := s.db.ExecContext(ctx,

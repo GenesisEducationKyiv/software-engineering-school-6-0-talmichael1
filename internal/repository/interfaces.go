@@ -50,4 +50,7 @@ type SubscriptionRepo interface {
 
 	// DeleteUnconfirmedOlderThan removes unconfirmed subscriptions older than the given age.
 	DeleteUnconfirmedOlderThan(ctx context.Context, age time.Duration) (int64, error)
+
+	// CountConfirmed returns the total number of confirmed subscriptions.
+	CountConfirmed(ctx context.Context) (int64, error)
 }

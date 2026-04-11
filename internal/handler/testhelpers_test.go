@@ -44,6 +44,7 @@ func (m *mockSubRepoHandler) ListConfirmedByRepoID(_ context.Context, _ int64) (
 func (m *mockSubRepoHandler) DeleteUnconfirmedOlderThan(_ context.Context, _ time.Duration) (int64, error) {
 	return 0, nil
 }
+func (m *mockSubRepoHandler) CountConfirmed(_ context.Context) (int64, error) { return 0, nil }
 
 // mockRepoRepoHandler implements repository.RepositoryRepo for handler tests.
 type mockRepoRepoHandler struct{}

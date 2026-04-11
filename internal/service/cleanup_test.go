@@ -34,6 +34,7 @@ func (m *mockCleanupSubRepo) DeleteUnconfirmedOlderThan(ctx context.Context, age
 	}
 	return 0, nil
 }
+func (m *mockCleanupSubRepo) CountConfirmed(_ context.Context) (int64, error) { return 0, nil }
 
 func TestCleanup_DeletesStaleSubscriptions(t *testing.T) {
 	var calledAge time.Duration

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github-release-notifier/internal/domain"
+	"github-release-notifier/internal/metrics"
 )
 
 const maxRetries = 5
@@ -106,6 +107,7 @@ func (n *Notifier) processJob(ctx context.Context, job *domain.NotificationJob) 
 				"error", err)
 			return n.queue.Requeue(ctx, *job)
 		}
+		metrics.NotificationsFailed.Inc()
 		return fmt.Errorf("max retries exceeded for %s: %w", job.Email, err)
 	}
 
@@ -116,6 +118,7 @@ func (n *Notifier) processJob(ctx context.Context, job *domain.NotificationJob) 
 			"tag", job.Tag,
 			"error", err)
 	}
+	metrics.NotificationsSent.Inc()
 
 	slog.Info("notification sent",
 		"email", job.Email,
