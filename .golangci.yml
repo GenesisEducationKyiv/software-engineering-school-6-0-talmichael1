@@ -16,6 +16,9 @@ linters:
     - unused
     - ineffassign
     - misspell
+    - gocritic
+    - gocyclo
+    - dupl
 
   settings:
     errcheck:

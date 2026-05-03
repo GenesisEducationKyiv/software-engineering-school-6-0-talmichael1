@@ -39,11 +39,17 @@ import (
 )
 
 func main() {
+	if err := run(); err != nil {
+		slog.Error("fatal", "error", err)
+		os.Exit(1)
+	}
+}
+
+func run() error {
 	logLevel := slog.LevelInfo
 	cfg, err := config.Load()
 	if err != nil {
-		slog.Error("loading config", "error", err)
-		os.Exit(1)
+		return fmt.Errorf("loading config: %w", err)
 	}
 	if cfg.Debug {
 		logLevel = slog.LevelDebug
@@ -67,12 +73,10 @@ func main() {
 		otelsql.WithSpanOptions(otelsql.SpanOptions{Ping: true}),
 	)
 	if err != nil {
-		slog.Error("opening database", "error", err)
-		os.Exit(1)
+		return fmt.Errorf("opening database: %w", err)
 	}
 	if err := sqlDB.Ping(); err != nil {
-		slog.Error("connecting to database", "error", err)
-		os.Exit(1)
+		return fmt.Errorf("connecting to database: %w", err)
 	}
 	db := sqlx.NewDb(sqlDB, "postgres")
 	defer func() { _ = db.Close() }()
@@ -80,13 +84,14 @@ func main() {
 	db.SetMaxIdleConns(8)
 	db.SetConnMaxLifetime(5 * time.Minute)
 
-	runMigrations(cfg.DatabaseURL)
+	if err := runMigrations(cfg.DatabaseURL); err != nil {
+		return err
+	}
 
 	// --- Redis ---
 	redisOpts, err := redis.ParseURL(cfg.RedisURL)
 	if err != nil {
-		slog.Error("parsing redis URL", "error", err)
-		os.Exit(1)
+		return fmt.Errorf("parsing redis URL: %w", err)
 	}
 	// Heroku Redis uses self-signed certificates; skip verification when TLS is enabled.
 	if redisOpts.TLSConfig != nil {
@@ -98,8 +103,7 @@ func main() {
 	defer func() { _ = rdb.Close() }()
 
 	if err := rdb.Ping(context.Background()).Err(); err != nil {
-		slog.Error("connecting to redis", "error", err)
-		os.Exit(1)
+		return fmt.Errorf("connecting to redis: %w", err)
 	}
 
 	// --- Dependencies ---
@@ -205,22 +209,21 @@ func main() {
 		slog.Error("HTTP shutdown error", "error", err)
 	}
 	slog.Info("shutdown complete")
+	return nil
 }
 
-func runMigrations(dbURL string) {
+func runMigrations(dbURL string) error {
 	source, err := iofs.New(migrations.FS, ".")
 	if err != nil {
-		slog.Error("creating migration source", "error", err)
-		os.Exit(1)
+		return fmt.Errorf("creating migration source: %w", err)
 	}
 	m, err := migrate.NewWithSourceInstance("iofs", source, dbURL)
 	if err != nil {
-		slog.Error("creating migrator", "error", err)
-		os.Exit(1)
+		return fmt.Errorf("creating migrator: %w", err)
 	}
 	if err := m.Up(); err != nil && err != migrate.ErrNoChange {
-		slog.Error("running migrations", "error", err)
-		os.Exit(1)
+		return fmt.Errorf("running migrations: %w", err)
 	}
 	slog.Info("database migrations applied")
+	return nil
 }
