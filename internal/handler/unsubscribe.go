@@ -10,7 +10,6 @@ import (
 	"github-release-notifier/internal/service"
 )
 
-// Unsubscribe handles GET /api/unsubscribe/:token.
 func Unsubscribe(svc *service.SubscriptionService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		token := c.Param("token")

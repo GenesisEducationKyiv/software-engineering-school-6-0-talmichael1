@@ -9,8 +9,6 @@ import (
 	"github-release-notifier/internal/domain"
 )
 
-// --- mocks ---
-
 type mockSubRepo struct {
 	createFn            func(ctx context.Context, sub *domain.Subscription) error
 	getByConfirmTokenFn func(ctx context.Context, token string) (*domain.Subscription, error)
@@ -134,8 +132,6 @@ func newTestService(opts ...func(*SubscriptionService)) *SubscriptionService {
 	}
 	return svc
 }
-
-// --- tests ---
 
 func TestSubscribe_InvalidEmail(t *testing.T) {
 	svc := newTestService()

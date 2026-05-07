@@ -57,7 +57,7 @@ func run() error {
 	}
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: logLevel})))
 
-	// --- Tracing (must init before DB so otelsql picks up the real TracerProvider) ---
+	// Tracing must init before the DB so otelsql picks up the real TracerProvider.
 	if cfg.OTelEnabled && cfg.JaegerEndpoint != "" {
 		shutdown, err := tracing.Init(context.Background(), cfg.JaegerEndpoint)
 		if err != nil {
@@ -68,7 +68,6 @@ func run() error {
 		}
 	}
 
-	// --- Database ---
 	sqlDB, err := otelsql.Open("postgres", cfg.DatabaseURL,
 		otelsql.WithAttributes(semconv.DBSystemPostgreSQL),
 		otelsql.WithSpanOptions(otelsql.SpanOptions{Ping: true}),
@@ -89,7 +88,6 @@ func run() error {
 		return err
 	}
 
-	// --- Redis ---
 	redisOpts, err := redis.ParseURL(cfg.RedisURL)
 	if err != nil {
 		return fmt.Errorf("parsing redis URL: %w", err)
@@ -107,14 +105,12 @@ func run() error {
 		return fmt.Errorf("connecting to redis: %w", err)
 	}
 
-	// --- Dependencies ---
 	repoStore := postgres.NewRepositoryStore(db)
 	subStore := postgres.NewSubscriptionStore(db)
 
 	gh := ghclient.NewClient(cfg.GitHubToken)
 	cachedGH := cache.NewCachedGitHubClient(gh, rdb)
 
-	// --- Email ---
 	var mailer service.EmailSender
 	if cfg.UseConsoleEmail() {
 		slog.Info("using console email backend (emails logged to stdout)")
@@ -131,7 +127,6 @@ func run() error {
 	notifier := service.NewNotifier(notifQueue, mailer, cfg.BaseURL, cfg.NotificationWorkers)
 	cleanup := service.NewCleanup(subStore)
 
-	// --- HTTP Server ---
 	gin.SetMode(gin.ReleaseMode)
 	router := gin.New()
 	router.Use(gin.Recovery())
@@ -162,11 +157,9 @@ func run() error {
 		IdleTimeout:  60 * time.Second,
 	}
 
-	// --- gRPC Server ---
 	grpcSrv := grpc.NewServer()
 	pb.RegisterSubscriptionServiceServer(grpcSrv, grpcserver.NewServer(subscriptionSvc))
 
-	// --- Start ---
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -194,7 +187,6 @@ func run() error {
 		}
 	}()
 
-	// --- Graceful shutdown ---
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit

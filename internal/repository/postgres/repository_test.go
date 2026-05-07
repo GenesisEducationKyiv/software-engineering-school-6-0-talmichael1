@@ -155,11 +155,9 @@ func TestRepositoryStore_ListWithActiveSubscriptions(t *testing.T) {
 	subStore := NewSubscriptionStore(testDB)
 	ctx := context.Background()
 
-	// Create two repos.
 	repo1, _ := repoStore.GetOrCreate(ctx, "golang", "go")
 	repo2, _ := repoStore.GetOrCreate(ctx, "gin-gonic", "gin")
 
-	// Subscribe to repo1 and confirm.
 	sub := &domain.Subscription{
 		Email:            "test@example.com",
 		RepositoryID:     repo1.ID,

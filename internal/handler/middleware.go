@@ -8,8 +8,7 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// APIKeyAuth returns middleware that validates the X-API-Key header.
-// When the key is empty, authentication is disabled (development mode).
+// APIKeyAuth treats an empty key as auth-disabled (development mode).
 func APIKeyAuth(key string) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if key == "" {
@@ -29,8 +28,7 @@ func APIKeyAuth(key string) gin.HandlerFunc {
 	}
 }
 
-// CORS returns middleware that sets cross-origin headers. Required when the
-// frontend is served from a different domain (e.g. Cloudflare Pages).
+// CORS is required because the frontend runs on a different domain (Cloudflare Pages).
 func CORS(allowedOrigins string) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		c.Header("Access-Control-Allow-Origin", allowedOrigins)
@@ -45,7 +43,6 @@ func CORS(allowedOrigins string) gin.HandlerFunc {
 	}
 }
 
-// RequestLogger logs each request with its duration and status code.
 func RequestLogger() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		start := time.Now()

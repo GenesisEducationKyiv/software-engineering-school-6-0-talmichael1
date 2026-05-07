@@ -7,7 +7,6 @@ import (
 	"github.com/caarlos0/env/v11"
 )
 
-// Config holds all application configuration parsed from environment variables.
 type Config struct {
 	Port     int    `env:"PORT" envDefault:"8080"`
 	GRPCPort int    `env:"GRPC_PORT" envDefault:"9090"`
@@ -36,12 +35,10 @@ type Config struct {
 	CORSOrigins string `env:"CORS_ORIGINS" envDefault:"*"`
 }
 
-// UseConsoleEmail returns true when Mailgun is not configured or debug mode is on.
 func (c *Config) UseConsoleEmail() bool {
 	return c.Debug || c.MailgunDomain == "" || c.MailgunAPIKey == ""
 }
 
-// Load parses configuration from environment variables.
 func Load() (*Config, error) {
 	cfg := &Config{}
 	if err := env.Parse(cfg); err != nil {

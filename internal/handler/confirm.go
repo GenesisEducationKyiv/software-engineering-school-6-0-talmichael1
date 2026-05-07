@@ -10,7 +10,6 @@ import (
 	"github-release-notifier/internal/service"
 )
 
-// Confirm handles GET /api/confirm/:token.
 func Confirm(svc *service.SubscriptionService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		token := c.Param("token")

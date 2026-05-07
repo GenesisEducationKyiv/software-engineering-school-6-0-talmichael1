@@ -12,8 +12,6 @@ import (
 	"github-release-notifier/internal/service"
 )
 
-// Server implements the gRPC SubscriptionService, delegating to the same
-// business logic layer as the REST handlers.
 type Server struct {
 	pb.UnimplementedSubscriptionServiceServer
 	svc *service.SubscriptionService

@@ -12,8 +12,7 @@ import (
 	semconv "go.opentelemetry.io/otel/semconv/v1.24.0"
 )
 
-// Init configures the OpenTelemetry tracing pipeline with an OTLP/HTTP exporter
-// targeting a Jaeger instance. Returns a shutdown function that should be deferred.
+// Init returns a shutdown function that the caller should defer.
 func Init(ctx context.Context, jaegerEndpoint string) (func(context.Context) error, error) {
 	exporter, err := otlptracehttp.New(ctx,
 		otlptracehttp.WithEndpointURL(jaegerEndpoint),

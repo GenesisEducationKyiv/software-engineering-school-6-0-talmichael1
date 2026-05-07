@@ -77,7 +77,6 @@ func TestMain(m *testing.M) {
 
 	code := m.Run()
 
-	// Clean up test data.
 	testDB.Exec("DELETE FROM subscriptions")
 	testDB.Exec("DELETE FROM repositories")
 
@@ -235,7 +234,6 @@ func TestSubscribeDuplicateReturns409(t *testing.T) {
 		"repo":  "golang/go",
 	})
 
-	// First subscription.
 	w := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/subscribe", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -244,7 +242,7 @@ func TestSubscribeDuplicateReturns409(t *testing.T) {
 		t.Fatalf("first subscribe: expected 200, got %d", w.Code)
 	}
 
-	// Duplicate subscription.
+	// Same payload again — must be rejected as a duplicate.
 	w = httptest.NewRecorder()
 	req = httptest.NewRequest(http.MethodPost, "/api/subscribe", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")

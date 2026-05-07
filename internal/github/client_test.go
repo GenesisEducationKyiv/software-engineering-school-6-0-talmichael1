@@ -129,18 +129,13 @@ func TestClient_ParseRateLimitHeaders(t *testing.T) {
 	}
 }
 
-// newTestClient creates a Client that points at a test server instead of github.com.
+// newTestClient redirects requests through a test-server transport, since baseURL is a const.
 func newTestClient(baseURL, token string) *Client {
 	c := NewClient(token)
-	// Override the base URL by using a custom HTTP client transport.
-	// Instead, we'll just replace the package-level baseURL for testing.
-	// Since baseURL is a const, we need a different approach — use a wrapper.
-	// The simplest: set the httpClient to redirect to our test server.
 	c.httpClient.Transport = &rewriteTransport{base: baseURL}
 	return c
 }
 
-// rewriteTransport replaces the GitHub API host with a test server URL.
 type rewriteTransport struct {
 	base string
 }
@@ -148,7 +143,6 @@ type rewriteTransport struct {
 func (t *rewriteTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	req.URL.Scheme = "http"
 	testURL := t.base
-	// Strip scheme from test URL.
 	if len(testURL) > 7 && testURL[:7] == "http://" {
 		testURL = testURL[7:]
 	}

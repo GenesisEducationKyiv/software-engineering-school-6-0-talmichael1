@@ -14,19 +14,16 @@ import (
 	"github-release-notifier/internal/repository"
 )
 
-// GitHubChecker verifies repository existence and fetches releases.
 type GitHubChecker interface {
 	RepoExists(ctx context.Context, owner, repo string) error
 	GetLatestRelease(ctx context.Context, owner, repo string) (*domain.Release, error)
 }
 
-// EmailSender sends transactional emails.
 type EmailSender interface {
 	SendConfirmation(ctx context.Context, to, repo, confirmURL string) error
 	SendReleaseNotification(ctx context.Context, to, repo, tag, releaseURL, unsubURL string) error
 }
 
-// SubscriptionService implements the business logic for managing subscriptions.
 type SubscriptionService struct {
 	subRepo  repository.SubscriptionRepo
 	repoRepo repository.RepositoryRepo
@@ -51,7 +48,6 @@ func NewSubscriptionService(
 	}
 }
 
-// Subscribe creates a new subscription after validating the email and repository.
 func (s *SubscriptionService) Subscribe(ctx context.Context, emailAddr, repoFullName string) error {
 	if err := validateEmail(emailAddr); err != nil {
 		return fmt.Errorf("%w: %s", domain.ErrInvalidInput, err.Error())
@@ -62,8 +58,8 @@ func (s *SubscriptionService) Subscribe(ctx context.Context, emailAddr, repoFull
 		return fmt.Errorf("%w: %s", domain.ErrInvalidInput, err.Error())
 	}
 
-	// Verify the repo exists and seed the latest release tag in one call.
-	// If the repo has no releases, we fall back to RepoExists to confirm it's valid.
+	// Try the latest release first to seed last_seen_tag in one call;
+	// fall back to RepoExists when the repo has no releases yet.
 	var initialTag string
 	release, err := s.github.GetLatestRelease(ctx, owner, name)
 	if err != nil {
@@ -73,7 +69,6 @@ func (s *SubscriptionService) Subscribe(ctx context.Context, emailAddr, repoFull
 			}
 			return fmt.Errorf("checking repository: %w", err)
 		}
-		// No releases — verify the repo itself exists.
 		if err := s.github.RepoExists(ctx, owner, name); err != nil {
 			if errors.Is(err, domain.ErrNotFound) {
 				return domain.ErrNotFound
@@ -118,7 +113,7 @@ func (s *SubscriptionService) Subscribe(ctx context.Context, emailAddr, repoFull
 
 	confirmURL := fmt.Sprintf("%s/api/confirm/%s", s.baseURL, confirmToken)
 	if err := s.email.SendConfirmation(ctx, emailAddr, repoFullName, confirmURL); err != nil {
-		// Roll back the subscription so the user can retry.
+		// Roll back so the user can retry without hitting ErrConflict.
 		_ = s.subRepo.Delete(ctx, sub.ID) //nolint:errcheck // best-effort rollback
 		return fmt.Errorf("sending confirmation email: %w", err)
 	}
@@ -126,7 +121,6 @@ func (s *SubscriptionService) Subscribe(ctx context.Context, emailAddr, repoFull
 	return nil
 }
 
-// Confirm activates a subscription using the provided confirmation token.
 func (s *SubscriptionService) Confirm(ctx context.Context, token string) error {
 	if token == "" {
 		return fmt.Errorf("%w: empty token", domain.ErrInvalidInput)
@@ -146,7 +140,6 @@ func (s *SubscriptionService) Confirm(ctx context.Context, token string) error {
 	return nil
 }
 
-// Unsubscribe removes a subscription using the provided unsubscribe token.
 func (s *SubscriptionService) Unsubscribe(ctx context.Context, token string) error {
 	if token == "" {
 		return fmt.Errorf("%w: empty token", domain.ErrInvalidInput)
@@ -166,7 +159,6 @@ func (s *SubscriptionService) Unsubscribe(ctx context.Context, token string) err
 	return nil
 }
 
-// ListByEmail returns all subscriptions for the given email address.
 func (s *SubscriptionService) ListByEmail(ctx context.Context, emailAddr string) ([]domain.SubscriptionView, error) {
 	if err := validateEmail(emailAddr); err != nil {
 		return nil, fmt.Errorf("%w: %s", domain.ErrInvalidInput, err.Error())

@@ -11,7 +11,6 @@ import (
 	"github-release-notifier/internal/domain"
 )
 
-// RepositoryStore implements repository.RepositoryRepo backed by PostgreSQL.
 type RepositoryStore struct {
 	db *sqlx.DB
 }

@@ -13,8 +13,6 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-// --- mocks ---
-
 type mockSubRepo struct{}
 
 func (m *mockSubRepo) Create(_ context.Context, _ *domain.Subscription) error { return nil }
@@ -84,8 +82,6 @@ func newTestServer(opts ...func(*mockGitHub)) *Server {
 	)
 	return NewServer(svc)
 }
-
-// --- tests ---
 
 func TestGRPC_Subscribe_Success(t *testing.T) {
 	srv := newTestServer()

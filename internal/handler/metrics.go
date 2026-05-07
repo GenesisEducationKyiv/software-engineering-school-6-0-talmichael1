@@ -9,7 +9,6 @@ import (
 	"github-release-notifier/internal/metrics"
 )
 
-// PrometheusMiddleware collects HTTP request metrics.
 func PrometheusMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		start := time.Now()

@@ -7,7 +7,6 @@ import (
 	"github-release-notifier/internal/domain"
 )
 
-// mockSubRepoHandler implements repository.SubscriptionRepo for handler tests.
 type mockSubRepoHandler struct {
 	createErr       error
 	confirmTokenErr error
@@ -46,7 +45,6 @@ func (m *mockSubRepoHandler) DeleteUnconfirmedOlderThan(_ context.Context, _ tim
 }
 func (m *mockSubRepoHandler) CountConfirmed(_ context.Context) (int64, error) { return 0, nil }
 
-// mockRepoRepoHandler implements repository.RepositoryRepo for handler tests.
 type mockRepoRepoHandler struct{}
 
 func (m *mockRepoRepoHandler) GetOrCreate(_ context.Context, owner, name string) (*domain.Repository, error) {
@@ -63,7 +61,6 @@ func (m *mockRepoRepoHandler) UpdateLastSeenTag(_ context.Context, _ int64, _ st
 }
 func (m *mockRepoRepoHandler) UpdateCheckedAt(_ context.Context, _ int64) error { return nil }
 
-// mockGitHubHandler implements service.GitHubChecker for handler tests.
 type mockGitHubHandler struct {
 	repoErr error
 }
@@ -78,7 +75,6 @@ func (m *mockGitHubHandler) GetLatestRelease(_ context.Context, _, _ string) (*d
 	return &domain.Release{TagName: "v1.0.0"}, nil
 }
 
-// mockEmailHandler implements service.EmailSender for handler tests.
 type mockEmailHandler struct{}
 
 func (m *mockEmailHandler) SendConfirmation(_ context.Context, _, _, _ string) error { return nil }

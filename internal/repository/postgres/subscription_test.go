@@ -31,7 +31,6 @@ func TestSubscriptionStore_CreateAndGet(t *testing.T) {
 		t.Fatal("expected non-zero ID after create")
 	}
 
-	// Get by confirm token.
 	found, err := subStore.GetByConfirmToken(ctx, "confirm-token-1")
 	if err != nil {
 		t.Fatalf("get by confirm token: %v", err)
@@ -40,7 +39,6 @@ func TestSubscriptionStore_CreateAndGet(t *testing.T) {
 		t.Fatalf("expected user@example.com, got %s", found.Email)
 	}
 
-	// Get by unsub token.
 	found, err = subStore.GetByUnsubscribeToken(ctx, "unsub-token-1")
 	if err != nil {
 		t.Fatalf("get by unsub token: %v", err)

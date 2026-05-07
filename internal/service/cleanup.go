@@ -13,7 +13,6 @@ const (
 	maxUnconfirmedAge = 1 * time.Hour
 )
 
-// Cleanup periodically removes unconfirmed subscriptions that have expired.
 type Cleanup struct {
 	subRepo repository.SubscriptionRepo
 }
@@ -22,7 +21,6 @@ func NewCleanup(subRepo repository.SubscriptionRepo) *Cleanup {
 	return &Cleanup{subRepo: subRepo}
 }
 
-// Run starts the cleanup loop. It blocks until the context is cancelled.
 func (c *Cleanup) Run(ctx context.Context) {
 	slog.Info("cleanup worker started",
 		"interval", cleanupInterval,

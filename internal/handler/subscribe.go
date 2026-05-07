@@ -16,7 +16,6 @@ type subscribeRequest struct {
 	Repo  string `json:"repo" binding:"required"`
 }
 
-// Subscribe handles POST /api/subscribe.
 func Subscribe(svc *service.SubscriptionService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var req subscribeRequest

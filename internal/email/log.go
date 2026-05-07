@@ -7,8 +7,7 @@ import (
 	"strings"
 )
 
-// LogSender is a development email backend that writes email content to stdout
-// instead of sending it. Similar to Django's console.EmailBackend.
+// LogSender writes email content to stdout instead of sending it (dev backend).
 type LogSender struct{}
 
 func NewLogSender() *LogSender {

@@ -17,7 +17,6 @@ import (
 
 const baseURL = "https://api.github.com"
 
-// Client wraps the GitHub REST API with rate-limit awareness and retry logic.
 type Client struct {
 	httpClient *http.Client
 	token      string
@@ -35,16 +34,14 @@ func NewClient(token string) *Client {
 	}
 }
 
-// RepoExists checks if a GitHub repository exists. Returns an error wrapping
-// domain.ErrNotFound when the repo doesn't exist, or domain.ErrRateLimited on 429.
+// RepoExists returns domain.ErrNotFound for a missing repo or domain.ErrRateLimited on 429.
 func (c *Client) RepoExists(ctx context.Context, owner, repo string) error {
 	url := fmt.Sprintf("%s/repos/%s/%s", baseURL, owner, repo)
 	_, err := c.doGet(ctx, url)
 	return err
 }
 
-// GetLatestRelease fetches the most recent release for a repository.
-// Returns domain.ErrNotFound if there are no releases.
+// GetLatestRelease returns domain.ErrNotFound if the repo has no releases.
 func (c *Client) GetLatestRelease(ctx context.Context, owner, repo string) (*domain.Release, error) {
 	url := fmt.Sprintf("%s/repos/%s/%s/releases/latest", baseURL, owner, repo)
 	body, err := c.doGet(ctx, url)
@@ -129,7 +126,6 @@ func (c *Client) doGet(ctx context.Context, url string) ([]byte, error) {
 	return nil, fmt.Errorf("max retries exceeded: %w", lastErr)
 }
 
-// waitForRateLimit blocks if we know the rate limit is exhausted.
 func (c *Client) waitForRateLimit() {
 	c.mu.Lock()
 	remaining := c.rateRemaining
@@ -143,7 +139,6 @@ func (c *Client) waitForRateLimit() {
 	}
 }
 
-// updateRateLimit reads GitHub rate limit headers and stores them.
 func (c *Client) updateRateLimit(resp *http.Response) {
 	c.mu.Lock()
 	defer c.mu.Unlock()

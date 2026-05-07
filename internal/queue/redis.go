@@ -17,7 +17,6 @@ const (
 	dedupTTL     = 1 * 24 * time.Hour // 1 day
 )
 
-// NotificationQueue manages the Redis-backed notification job queue.
 type NotificationQueue struct {
 	rdb *redis.Client
 }
@@ -26,7 +25,6 @@ func NewNotificationQueue(rdb *redis.Client) *NotificationQueue {
 	return &NotificationQueue{rdb: rdb}
 }
 
-// Enqueue pushes a notification job onto the pending queue.
 func (q *NotificationQueue) Enqueue(ctx context.Context, job domain.NotificationJob) error {
 	data, err := json.Marshal(job)
 	if err != nil {
@@ -35,7 +33,6 @@ func (q *NotificationQueue) Enqueue(ctx context.Context, job domain.Notification
 	return q.rdb.LPush(ctx, pendingQueue, data).Err()
 }
 
-// EnqueueBatch pushes multiple jobs in a single pipeline call.
 func (q *NotificationQueue) EnqueueBatch(ctx context.Context, jobs []domain.NotificationJob) error {
 	if len(jobs) == 0 {
 		return nil
@@ -52,8 +49,7 @@ func (q *NotificationQueue) EnqueueBatch(ctx context.Context, jobs []domain.Noti
 	return err
 }
 
-// Dequeue blocks until a job is available or the timeout expires.
-// Returns nil, nil when the timeout is reached with no available jobs.
+// Dequeue returns (nil, nil) when the timeout is reached with no jobs.
 func (q *NotificationQueue) Dequeue(ctx context.Context, timeout time.Duration) (*domain.NotificationJob, error) {
 	result, err := q.rdb.BRPop(ctx, timeout, pendingQueue).Result()
 	if err == redis.Nil {
@@ -70,7 +66,6 @@ func (q *NotificationQueue) Dequeue(ctx context.Context, timeout time.Duration) 
 	return &job, nil
 }
 
-// IsSent checks whether a notification has already been delivered.
 func (q *NotificationQueue) IsSent(ctx context.Context, subscriptionID int64, tag string) (bool, error) {
 	key := fmt.Sprintf("%s%d:%s", dedupPrefix, subscriptionID, tag)
 	exists, err := q.rdb.Exists(ctx, key).Result()
@@ -80,13 +75,11 @@ func (q *NotificationQueue) IsSent(ctx context.Context, subscriptionID int64, ta
 	return exists > 0, nil
 }
 
-// MarkSent records that a notification was sent, preventing duplicate delivery.
 func (q *NotificationQueue) MarkSent(ctx context.Context, subscriptionID int64, tag string) error {
 	key := fmt.Sprintf("%s%d:%s", dedupPrefix, subscriptionID, tag)
 	return q.rdb.Set(ctx, key, "1", dedupTTL).Err()
 }
 
-// Requeue puts a failed job back into the pending queue for retry.
 func (q *NotificationQueue) Requeue(ctx context.Context, job domain.NotificationJob) error {
 	job.Attempt++
 	return q.Enqueue(ctx, job)
