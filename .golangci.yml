@@ -28,6 +28,10 @@ linters:
       disable:
         - shadow
         - fieldalignment
+    gocyclo:
+      min-complexity: 20
+    dupl:
+      threshold: 150
 
   exclusions:
     paths:

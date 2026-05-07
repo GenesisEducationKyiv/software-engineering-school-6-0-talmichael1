@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -221,7 +222,12 @@ func runMigrations(dbURL string) error {
 	if err != nil {
 		return fmt.Errorf("creating migrator: %w", err)
 	}
-	if err := m.Up(); err != nil && err != migrate.ErrNoChange {
+	defer func() {
+		if srcErr, dbErr := m.Close(); srcErr != nil || dbErr != nil {
+			slog.Warn("closing migrator", "source_error", srcErr, "db_error", dbErr)
+		}
+	}()
+	if err := m.Up(); err != nil && !errors.Is(err, migrate.ErrNoChange) {
 		return fmt.Errorf("running migrations: %w", err)
 	}
 	slog.Info("database migrations applied")
