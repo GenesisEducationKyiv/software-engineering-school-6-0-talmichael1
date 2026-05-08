@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -39,18 +40,24 @@ import (
 )
 
 func main() {
+	if err := run(); err != nil {
+		slog.Error("fatal", "error", err)
+		os.Exit(1)
+	}
+}
+
+func run() error {
 	logLevel := slog.LevelInfo
 	cfg, err := config.Load()
 	if err != nil {
-		slog.Error("loading config", "error", err)
-		os.Exit(1)
+		return fmt.Errorf("loading config: %w", err)
 	}
 	if cfg.Debug {
 		logLevel = slog.LevelDebug
 	}
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: logLevel})))
 
-	// --- Tracing (must init before DB so otelsql picks up the real TracerProvider) ---
+	// Tracing must init before the DB so otelsql picks up the real TracerProvider.
 	if cfg.OTelEnabled && cfg.JaegerEndpoint != "" {
 		shutdown, err := tracing.Init(context.Background(), cfg.JaegerEndpoint)
 		if err != nil {
@@ -61,18 +68,15 @@ func main() {
 		}
 	}
 
-	// --- Database ---
 	sqlDB, err := otelsql.Open("postgres", cfg.DatabaseURL,
 		otelsql.WithAttributes(semconv.DBSystemPostgreSQL),
 		otelsql.WithSpanOptions(otelsql.SpanOptions{Ping: true}),
 	)
 	if err != nil {
-		slog.Error("opening database", "error", err)
-		os.Exit(1)
+		return fmt.Errorf("opening database: %w", err)
 	}
 	if err := sqlDB.Ping(); err != nil {
-		slog.Error("connecting to database", "error", err)
-		os.Exit(1)
+		return fmt.Errorf("connecting to database: %w", err)
 	}
 	db := sqlx.NewDb(sqlDB, "postgres")
 	defer func() { _ = db.Close() }()
@@ -80,13 +84,13 @@ func main() {
 	db.SetMaxIdleConns(8)
 	db.SetConnMaxLifetime(5 * time.Minute)
 
-	runMigrations(cfg.DatabaseURL)
+	if err := runMigrations(cfg.DatabaseURL); err != nil {
+		return err
+	}
 
-	// --- Redis ---
 	redisOpts, err := redis.ParseURL(cfg.RedisURL)
 	if err != nil {
-		slog.Error("parsing redis URL", "error", err)
-		os.Exit(1)
+		return fmt.Errorf("parsing redis URL: %w", err)
 	}
 	// Heroku Redis uses self-signed certificates; skip verification when TLS is enabled.
 	if redisOpts.TLSConfig != nil {
@@ -98,18 +102,15 @@ func main() {
 	defer func() { _ = rdb.Close() }()
 
 	if err := rdb.Ping(context.Background()).Err(); err != nil {
-		slog.Error("connecting to redis", "error", err)
-		os.Exit(1)
+		return fmt.Errorf("connecting to redis: %w", err)
 	}
 
-	// --- Dependencies ---
 	repoStore := postgres.NewRepositoryStore(db)
 	subStore := postgres.NewSubscriptionStore(db)
 
 	gh := ghclient.NewClient(cfg.GitHubToken)
 	cachedGH := cache.NewCachedGitHubClient(gh, rdb)
 
-	// --- Email ---
 	var mailer service.EmailSender
 	if cfg.UseConsoleEmail() {
 		slog.Info("using console email backend (emails logged to stdout)")
@@ -126,7 +127,6 @@ func main() {
 	notifier := service.NewNotifier(notifQueue, mailer, cfg.BaseURL, cfg.NotificationWorkers)
 	cleanup := service.NewCleanup(subStore)
 
-	// --- HTTP Server ---
 	gin.SetMode(gin.ReleaseMode)
 	router := gin.New()
 	router.Use(gin.Recovery())
@@ -157,11 +157,9 @@ func main() {
 		IdleTimeout:  60 * time.Second,
 	}
 
-	// --- gRPC Server ---
 	grpcSrv := grpc.NewServer()
 	pb.RegisterSubscriptionServiceServer(grpcSrv, grpcserver.NewServer(subscriptionSvc))
 
-	// --- Start ---
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -189,7 +187,6 @@ func main() {
 		}
 	}()
 
-	// --- Graceful shutdown ---
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
@@ -205,22 +202,26 @@ func main() {
 		slog.Error("HTTP shutdown error", "error", err)
 	}
 	slog.Info("shutdown complete")
+	return nil
 }
 
-func runMigrations(dbURL string) {
+func runMigrations(dbURL string) error {
 	source, err := iofs.New(migrations.FS, ".")
 	if err != nil {
-		slog.Error("creating migration source", "error", err)
-		os.Exit(1)
+		return fmt.Errorf("creating migration source: %w", err)
 	}
 	m, err := migrate.NewWithSourceInstance("iofs", source, dbURL)
 	if err != nil {
-		slog.Error("creating migrator", "error", err)
-		os.Exit(1)
+		return fmt.Errorf("creating migrator: %w", err)
 	}
-	if err := m.Up(); err != nil && err != migrate.ErrNoChange {
-		slog.Error("running migrations", "error", err)
-		os.Exit(1)
+	defer func() {
+		if srcErr, dbErr := m.Close(); srcErr != nil || dbErr != nil {
+			slog.Warn("closing migrator", "source_error", srcErr, "db_error", dbErr)
+		}
+	}()
+	if err := m.Up(); err != nil && !errors.Is(err, migrate.ErrNoChange) {
+		return fmt.Errorf("running migrations: %w", err)
 	}
 	slog.Info("database migrations applied")
+	return nil
 }

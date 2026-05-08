@@ -7,7 +7,6 @@ import (
 	"github.com/mailgun/mailgun-go/v4"
 )
 
-// Sender handles email delivery via the Mailgun API.
 type Sender struct {
 	mg   *mailgun.MailgunImpl
 	from string
@@ -21,7 +20,6 @@ func NewSender(domain, apiKey, from, apiBase string) *Sender {
 	return &Sender{mg: mg, from: from}
 }
 
-// SendConfirmation delivers a subscription confirmation email with the given token link.
 func (s *Sender) SendConfirmation(ctx context.Context, to, repo, confirmURL string) error {
 	subject := fmt.Sprintf("Confirm your subscription to %s releases", repo)
 	body := fmt.Sprintf(
@@ -39,7 +37,6 @@ func (s *Sender) SendConfirmation(ctx context.Context, to, repo, confirmURL stri
 	return s.send(ctx, to, subject, body, html)
 }
 
-// SendReleaseNotification delivers a new release notification email.
 func (s *Sender) SendReleaseNotification(ctx context.Context, to, repo, tag, releaseURL, unsubURL string) error {
 	subject := fmt.Sprintf("New release of %s: %s", repo, tag)
 	body := fmt.Sprintf(

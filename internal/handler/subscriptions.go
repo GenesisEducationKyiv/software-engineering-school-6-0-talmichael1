@@ -11,7 +11,6 @@ import (
 	"github-release-notifier/internal/service"
 )
 
-// Subscriptions handles GET /api/subscriptions?email=...
 func Subscriptions(svc *service.SubscriptionService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		email := c.Query("email")

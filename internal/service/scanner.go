@@ -15,13 +15,10 @@ import (
 	"github-release-notifier/internal/repository"
 )
 
-// NotificationEnqueuer pushes notification jobs to the queue.
 type NotificationEnqueuer interface {
 	EnqueueBatch(ctx context.Context, jobs []domain.NotificationJob) error
 }
 
-// Scanner periodically checks GitHub repositories for new releases and enqueues
-// notifications for all confirmed subscribers.
 type Scanner struct {
 	repoRepo repository.RepositoryRepo
 	subRepo  repository.SubscriptionRepo
@@ -55,13 +52,12 @@ func NewScanner(
 	}
 }
 
-// Run starts the scanner loop. It blocks until the context is cancelled.
 func (s *Scanner) Run(ctx context.Context) {
 	slog.Info("scanner started", "interval", s.interval)
 	ticker := time.NewTicker(s.interval)
 	defer ticker.Stop()
 
-	// Run immediately on startup, then on each tick.
+	// Scan once on startup, then on each tick.
 	s.scan(ctx)
 	for {
 		select {
@@ -121,7 +117,6 @@ func (s *Scanner) checkRepo(ctx context.Context, repo domain.Repository) error {
 	release, err := s.github.GetLatestRelease(ctx, repo.Owner, repo.Name)
 	if err != nil {
 		if errors.Is(err, domain.ErrNotFound) {
-			// No releases for this repo yet — just update checked_at.
 			return s.repoRepo.UpdateCheckedAt(ctx, repo.ID)
 		}
 		return fmt.Errorf("fetching latest release: %w", err)
@@ -159,7 +154,7 @@ func (s *Scanner) checkRepo(ctx context.Context, repo domain.Repository) error {
 	}
 	metrics.NotificationsEnqueued.Add(float64(len(jobs)))
 
-	// Update the tag only after successful enqueue to guarantee at-least-once delivery.
+	// Update the tag only after enqueue succeeds — at-least-once delivery.
 	if err := s.repoRepo.UpdateLastSeenTag(ctx, repo.ID, release.TagName); err != nil {
 		return fmt.Errorf("updating last seen tag: %w", err)
 	}

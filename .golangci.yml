@@ -16,6 +16,9 @@ linters:
     - unused
     - ineffassign
     - misspell
+    - gocritic
+    - gocyclo
+    - dupl
 
   settings:
     errcheck:
@@ -25,6 +28,10 @@ linters:
       disable:
         - shadow
         - fieldalignment
+    gocyclo:
+      min-complexity: 20
+    dupl:
+      threshold: 150
 
   exclusions:
     paths:

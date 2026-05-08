@@ -2,7 +2,6 @@ package domain
 
 import "time"
 
-// Repository represents a tracked GitHub repository.
 type Repository struct {
 	ID          int64      `db:"id"`
 	Owner       string     `db:"owner"`
@@ -12,12 +11,10 @@ type Repository struct {
 	CreatedAt   time.Time  `db:"created_at"`
 }
 
-// FullName returns the "owner/repo" format.
 func (r Repository) FullName() string {
 	return r.Owner + "/" + r.Name
 }
 
-// Subscription represents a user's email subscription to a repository.
 type Subscription struct {
 	ID               int64     `db:"id"`
 	Email            string    `db:"email"`
@@ -28,7 +25,6 @@ type Subscription struct {
 	CreatedAt        time.Time `db:"created_at"`
 }
 
-// SubscriptionView is a read model for the list endpoint, joining subscription + repository data.
 type SubscriptionView struct {
 	Email       string `json:"email" db:"email"`
 	Repo        string `json:"repo" db:"repo"`
@@ -36,7 +32,6 @@ type SubscriptionView struct {
 	LastSeenTag string `json:"last_seen_tag" db:"last_seen_tag"`
 }
 
-// Release holds information about a GitHub release.
 type Release struct {
 	TagName     string `json:"tag_name"`
 	Name        string `json:"name"`
@@ -45,7 +40,6 @@ type Release struct {
 	PublishedAt string `json:"published_at"`
 }
 
-// NotificationJob represents a single email notification to be sent.
 type NotificationJob struct {
 	SubscriptionID int64  `json:"subscription_id"`
 	Email          string `json:"email"`

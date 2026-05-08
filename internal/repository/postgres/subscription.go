@@ -13,7 +13,6 @@ import (
 	"github-release-notifier/internal/domain"
 )
 
-// SubscriptionStore implements repository.SubscriptionRepo backed by PostgreSQL.
 type SubscriptionStore struct {
 	db *sqlx.DB
 }
