@@ -12,29 +12,37 @@ import (
 
 	"github-release-notifier/internal/domain"
 	"github-release-notifier/internal/metrics"
-	"github-release-notifier/internal/repository"
 )
 
 type NotificationEnqueuer interface {
 	EnqueueBatch(ctx context.Context, jobs []domain.NotificationJob) error
 }
 
+type scannerRepoStore interface {
+	ListWithActiveSubscriptions(ctx context.Context) ([]domain.Repository, error)
+	UpdateLastSeenTag(ctx context.Context, id int64, tag string) error
+	UpdateCheckedAt(ctx context.Context, id int64) error
+}
+
+type scannerSubStore interface {
+	ListConfirmedByRepoID(ctx context.Context, repoID int64) ([]domain.Subscription, error)
+	CountConfirmed(ctx context.Context) (int64, error)
+}
+
 type Scanner struct {
-	repoRepo repository.RepositoryRepo
-	subRepo  repository.SubscriptionRepo
+	repoRepo scannerRepoStore
+	subRepo  scannerSubStore
 	github   GitHubChecker
 	queue    NotificationEnqueuer
-	baseURL  string
 	interval time.Duration
 	workers  int
 }
 
 func NewScanner(
-	repoRepo repository.RepositoryRepo,
-	subRepo repository.SubscriptionRepo,
+	repos scannerRepoStore,
+	subs scannerSubStore,
 	github GitHubChecker,
 	queue NotificationEnqueuer,
-	baseURL string,
 	interval time.Duration,
 	workers int,
 ) *Scanner {
@@ -42,11 +50,10 @@ func NewScanner(
 		workers = 1
 	}
 	return &Scanner{
-		repoRepo: repoRepo,
-		subRepo:  subRepo,
+		repoRepo: repos,
+		subRepo:  subs,
 		github:   github,
 		queue:    queue,
-		baseURL:  baseURL,
 		interval: interval,
 		workers:  workers,
 	}

@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github-release-notifier/internal/domain"
+	"github-release-notifier/internal/email"
+	"github-release-notifier/internal/urls"
 )
 
 type mockJobQueue struct {
@@ -61,14 +63,14 @@ func (m *mockJobQueue) Requeue(ctx context.Context, job domain.NotificationJob) 
 func TestNotifier_ProcessJob_SendsEmail(t *testing.T) {
 	var sentTo string
 	releaseSender := &releaseEmailMock{
-		sendFn: func(ctx context.Context, to, repo, tag, releaseURL, unsubURL string) error {
-			sentTo = to
+		sendFn: func(ctx context.Context, msg email.Message) error {
+			sentTo = msg.To
 			return nil
 		},
 	}
 
 	q := newMockJobQueue()
-	notifier := NewNotifier(q, releaseSender, "http://localhost:8080", 1)
+	notifier := NewNotifier(q, releaseSender, urls.Builder{BaseURL: "http://localhost:8080"}, 1)
 
 	job := &domain.NotificationJob{
 		SubscriptionID: 1,
@@ -94,13 +96,13 @@ func TestNotifier_ProcessJob_Dedup(t *testing.T) {
 	q.sent["1:go1.22.0"] = true
 
 	releaseSender := &releaseEmailMock{
-		sendFn: func(ctx context.Context, to, repo, tag, releaseURL, unsubURL string) error {
+		sendFn: func(ctx context.Context, msg email.Message) error {
 			t.Fatal("should not send duplicate notification")
 			return nil
 		},
 	}
 
-	notifier := NewNotifier(q, releaseSender, "http://localhost:8080", 1)
+	notifier := NewNotifier(q, releaseSender, urls.Builder{BaseURL: "http://localhost:8080"}, 1)
 
 	job := &domain.NotificationJob{
 		SubscriptionID: 1,
@@ -119,12 +121,12 @@ func TestNotifier_ProcessJob_Dedup(t *testing.T) {
 func TestNotifier_ProcessJob_RetryOnFailure(t *testing.T) {
 	q := newMockJobQueue()
 	releaseSender := &releaseEmailMock{
-		sendFn: func(ctx context.Context, to, repo, tag, releaseURL, unsubURL string) error {
+		sendFn: func(ctx context.Context, msg email.Message) error {
 			return fmt.Errorf("SMTP error")
 		},
 	}
 
-	notifier := NewNotifier(q, releaseSender, "http://localhost:8080", 1)
+	notifier := NewNotifier(q, releaseSender, urls.Builder{BaseURL: "http://localhost:8080"}, 1)
 
 	job := &domain.NotificationJob{
 		SubscriptionID: 1,
@@ -153,12 +155,12 @@ func TestNotifier_ProcessJob_RetryOnFailure(t *testing.T) {
 func TestNotifier_ProcessJob_MaxRetries(t *testing.T) {
 	q := newMockJobQueue()
 	releaseSender := &releaseEmailMock{
-		sendFn: func(ctx context.Context, to, repo, tag, releaseURL, unsubURL string) error {
+		sendFn: func(ctx context.Context, msg email.Message) error {
 			return fmt.Errorf("SMTP error")
 		},
 	}
 
-	notifier := NewNotifier(q, releaseSender, "http://localhost:8080", 1)
+	notifier := NewNotifier(q, releaseSender, urls.Builder{BaseURL: "http://localhost:8080"}, 1)
 
 	job := &domain.NotificationJob{
 		SubscriptionID: 1,
@@ -185,13 +187,13 @@ func TestNotifier_ProcessJob_MarkSentError(t *testing.T) {
 
 	var sent bool
 	releaseSender := &releaseEmailMock{
-		sendFn: func(ctx context.Context, to, repo, tag, releaseURL, unsubURL string) error {
+		sendFn: func(ctx context.Context, msg email.Message) error {
 			sent = true
 			return nil
 		},
 	}
 
-	notifier := NewNotifier(q, releaseSender, "http://localhost:8080", 1)
+	notifier := NewNotifier(q, releaseSender, urls.Builder{BaseURL: "http://localhost:8080"}, 1)
 
 	job := &domain.NotificationJob{
 		SubscriptionID: 1,
@@ -214,13 +216,13 @@ func TestNotifier_ProcessJob_MarkSentError(t *testing.T) {
 
 func TestNotifier_ProcessJob_DedupError(t *testing.T) {
 	releaseSender := &releaseEmailMock{
-		sendFn: func(ctx context.Context, to, repo, tag, releaseURL, unsubURL string) error {
+		sendFn: func(ctx context.Context, msg email.Message) error {
 			t.Fatal("should not send when dedup check fails")
 			return nil
 		},
 	}
 
-	notifier := NewNotifier(&errIsSentQueue{err: fmt.Errorf("redis unavailable")}, releaseSender, "http://localhost:8080", 1)
+	notifier := NewNotifier(&errIsSentQueue{err: fmt.Errorf("redis unavailable")}, releaseSender, urls.Builder{BaseURL: "http://localhost:8080"}, 1)
 
 	job := &domain.NotificationJob{
 		SubscriptionID: 1,
@@ -272,17 +274,14 @@ func (m *errMarkSentQueue) Requeue(ctx context.Context, job domain.NotificationJ
 	return nil
 }
 
-// releaseEmailMock implements EmailSender for notification-specific tests.
+// releaseEmailMock implements email.Sender for notification-specific tests.
 type releaseEmailMock struct {
-	sendFn func(ctx context.Context, to, repo, tag, releaseURL, unsubURL string) error
+	sendFn func(ctx context.Context, msg email.Message) error
 }
 
-func (m *releaseEmailMock) SendConfirmation(ctx context.Context, to, repo, confirmURL string) error {
-	return nil
-}
-func (m *releaseEmailMock) SendReleaseNotification(ctx context.Context, to, repo, tag, releaseURL, unsubURL string) error {
+func (m *releaseEmailMock) Send(ctx context.Context, msg email.Message) error {
 	if m.sendFn != nil {
-		return m.sendFn(ctx, to, repo, tag, releaseURL, unsubURL)
+		return m.sendFn(ctx, msg)
 	}
 	return nil
 }

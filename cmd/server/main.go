@@ -36,6 +36,7 @@ import (
 	"github-release-notifier/internal/repository/postgres"
 	"github-release-notifier/internal/service"
 	"github-release-notifier/internal/tracing"
+	"github-release-notifier/internal/urls"
 	"github-release-notifier/migrations"
 )
 
@@ -47,17 +48,12 @@ func main() {
 }
 
 func run() error {
-	logLevel := slog.LevelInfo
 	cfg, err := config.Load()
 	if err != nil {
 		return fmt.Errorf("loading config: %w", err)
 	}
-	if cfg.Debug {
-		logLevel = slog.LevelDebug
-	}
-	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: logLevel})))
+	configureLogger(cfg)
 
-	// Tracing must init before the DB so otelsql picks up the real TracerProvider.
 	if cfg.OTelEnabled && cfg.JaegerEndpoint != "" {
 		shutdown, err := tracing.Init(context.Background(), cfg.JaegerEndpoint)
 		if err != nil {
@@ -68,65 +64,140 @@ func run() error {
 		}
 	}
 
-	sqlDB, err := otelsql.Open("postgres", cfg.DatabaseURL,
-		otelsql.WithAttributes(semconv.DBSystemPostgreSQL),
-		otelsql.WithSpanOptions(otelsql.SpanOptions{Ping: true}),
-	)
+	db, err := connectDB(cfg.DatabaseURL)
 	if err != nil {
-		return fmt.Errorf("opening database: %w", err)
+		return err
 	}
-	if err := sqlDB.Ping(); err != nil {
-		return fmt.Errorf("connecting to database: %w", err)
-	}
-	db := sqlx.NewDb(sqlDB, "postgres")
 	defer func() { _ = db.Close() }()
-	db.SetMaxOpenConns(18) // Heroku allows 20; leave headroom for migrations and admin.
-	db.SetMaxIdleConns(8)
-	db.SetConnMaxLifetime(5 * time.Minute)
 
 	if err := runMigrations(cfg.DatabaseURL); err != nil {
 		return err
 	}
 
-	redisOpts, err := redis.ParseURL(cfg.RedisURL)
+	rdb, err := connectRedis(cfg.RedisURL)
 	if err != nil {
-		return fmt.Errorf("parsing redis URL: %w", err)
+		return err
 	}
-	// Heroku Redis uses self-signed certificates; skip verification when TLS is enabled.
-	if redisOpts.TLSConfig != nil {
-		redisOpts.TLSConfig.InsecureSkipVerify = true
-	}
-	redisOpts.PoolSize = 15
-	redisOpts.MinIdleConns = 5
-	rdb := redis.NewClient(redisOpts)
 	defer func() { _ = rdb.Close() }()
 
-	if err := rdb.Ping(context.Background()).Err(); err != nil {
-		return fmt.Errorf("connecting to redis: %w", err)
-	}
+	subscriptionSvc, scanner, notifier, cleanup := buildServices(cfg, db, rdb)
 
+	router := buildRouter(cfg, subscriptionSvc)
+	httpServer := &http.Server{
+		Addr:         fmt.Sprintf(":%d", cfg.Port),
+		Handler:      router,
+		ReadTimeout:  15 * time.Second,
+		WriteTimeout: 15 * time.Second,
+		IdleTimeout:  60 * time.Second,
+	}
+	grpcSrv := newGRPCServer(subscriptionSvc)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go scanner.Run(ctx)
+	go notifier.Run(ctx)
+	go cleanup.Run(ctx)
+
+	errCh := make(chan error, 2)
+	go func() { errCh <- serveGRPC(grpcSrv, cfg.GRPCPort) }()
+	go func() { errCh <- serveHTTP(httpServer, cfg.Port) }()
+
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+
+	select {
+	case <-quit:
+		slog.Info("shutting down...")
+	case err := <-errCh:
+		slog.Error("server failed, shutting down", "error", err)
+	}
+	cancel()
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer shutdownCancel()
+
+	grpcSrv.GracefulStop()
+	if err := httpServer.Shutdown(shutdownCtx); err != nil {
+		slog.Error("HTTP shutdown error", "error", err)
+	}
+	slog.Info("shutdown complete")
+	return nil
+}
+
+func configureLogger(cfg *config.Config) {
+	level := slog.LevelInfo
+	if cfg.Debug {
+		level = slog.LevelDebug
+	}
+	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: level})))
+}
+
+func connectDB(dsn string) (*sqlx.DB, error) {
+	sqlDB, err := otelsql.Open("postgres", dsn,
+		otelsql.WithAttributes(semconv.DBSystemPostgreSQL),
+		otelsql.WithSpanOptions(otelsql.SpanOptions{Ping: true}),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("opening database: %w", err)
+	}
+	if err := sqlDB.Ping(); err != nil {
+		return nil, fmt.Errorf("connecting to database: %w", err)
+	}
+	db := sqlx.NewDb(sqlDB, "postgres")
+	db.SetMaxOpenConns(18) // Heroku allows 20; leave headroom for migrations and admin.
+	db.SetMaxIdleConns(8)
+	db.SetConnMaxLifetime(5 * time.Minute)
+	return db, nil
+}
+
+func connectRedis(rawURL string) (*redis.Client, error) {
+	opts, err := redis.ParseURL(rawURL)
+	if err != nil {
+		return nil, fmt.Errorf("parsing redis URL: %w", err)
+	}
+	// Heroku Redis uses self-signed certificates; skip verification when TLS is enabled.
+	if opts.TLSConfig != nil {
+		opts.TLSConfig.InsecureSkipVerify = true
+	}
+	opts.PoolSize = 15
+	opts.MinIdleConns = 5
+	rdb := redis.NewClient(opts)
+	if err := rdb.Ping(context.Background()).Err(); err != nil {
+		_ = rdb.Close()
+		return nil, fmt.Errorf("connecting to redis: %w", err)
+	}
+	return rdb, nil
+}
+
+func buildServices(cfg *config.Config, db *sqlx.DB, rdb *redis.Client) (
+	*service.SubscriptionService, *service.Scanner, *service.Notifier, *service.Cleanup,
+) {
 	repoStore := postgres.NewRepositoryStore(db)
 	subStore := postgres.NewSubscriptionStore(db)
 
 	gh := ghclient.NewClient(cfg.GitHubToken)
 	cachedGH := cache.NewCachedGitHubClient(gh, rdb)
 
-	var mailer service.EmailSender
+	var mailer email.Sender
 	if cfg.UseConsoleEmail() {
 		slog.Info("using console email backend (emails logged to stdout)")
 		mailer = email.NewLogSender()
 	} else {
 		slog.Info("using Mailgun email backend", "domain", cfg.MailgunDomain)
-		mailer = email.NewSender(cfg.MailgunDomain, cfg.MailgunAPIKey, cfg.MailgunFrom, cfg.MailgunAPIBase)
+		mailer = email.NewMailgunSender(cfg.MailgunDomain, cfg.MailgunAPIKey, cfg.MailgunFrom, cfg.MailgunAPIBase)
 	}
 
 	notifQueue := queue.NewNotificationQueue(rdb)
+	urlBuilder := urls.Builder{BaseURL: cfg.BaseURL}
 
-	subscriptionSvc := service.NewSubscriptionService(subStore, repoStore, cachedGH, mailer, cfg.BaseURL)
-	scanner := service.NewScanner(repoStore, subStore, cachedGH, notifQueue, cfg.BaseURL, cfg.ScanInterval, cfg.ScanWorkers)
-	notifier := service.NewNotifier(notifQueue, mailer, cfg.BaseURL, cfg.NotificationWorkers)
+	subscriptionSvc := service.NewSubscriptionService(subStore, repoStore, cachedGH, mailer, urlBuilder)
+	scanner := service.NewScanner(repoStore, subStore, cachedGH, notifQueue, cfg.ScanInterval, cfg.ScanWorkers)
+	notifier := service.NewNotifier(notifQueue, mailer, urlBuilder, cfg.NotificationWorkers)
 	cleanup := service.NewCleanup(subStore)
+	return subscriptionSvc, scanner, notifier, cleanup
+}
 
+func buildRouter(cfg *config.Config, svc *service.SubscriptionService) *gin.Engine {
 	gin.SetMode(gin.ReleaseMode)
 	router := gin.New()
 	router.Use(gin.Recovery())
@@ -143,65 +214,37 @@ func run() error {
 	api := router.Group("/api")
 	api.Use(handler.APIKeyAuth(cfg.APIKey))
 	{
-		api.POST("/subscribe", handler.Subscribe(subscriptionSvc))
-		api.GET("/confirm/:token", handler.Confirm(subscriptionSvc))
-		api.GET("/unsubscribe/:token", handler.Unsubscribe(subscriptionSvc))
-		api.GET("/subscriptions", handler.Subscriptions(subscriptionSvc))
+		api.POST("/subscribe", handler.Subscribe(svc))
+		api.GET("/confirm/:token", handler.Confirm(svc))
+		api.GET("/unsubscribe/:token", handler.Unsubscribe(svc))
+		api.GET("/subscriptions", handler.Subscriptions(svc))
 	}
+	return router
+}
 
-	httpServer := &http.Server{
-		Addr:         fmt.Sprintf(":%d", cfg.Port),
-		Handler:      router,
-		ReadTimeout:  15 * time.Second,
-		WriteTimeout: 15 * time.Second,
-		IdleTimeout:  60 * time.Second,
+func newGRPCServer(svc *service.SubscriptionService) *grpc.Server {
+	g := grpc.NewServer()
+	pb.RegisterSubscriptionServiceServer(g, grpcserver.NewServer(svc))
+	return g
+}
+
+func serveGRPC(g *grpc.Server, port int) error {
+	lis, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
+	if err != nil {
+		return fmt.Errorf("gRPC listen: %w", err)
 	}
-
-	grpcSrv := grpc.NewServer()
-	pb.RegisterSubscriptionServiceServer(grpcSrv, grpcserver.NewServer(subscriptionSvc))
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	go scanner.Run(ctx)
-	go notifier.Run(ctx)
-	go cleanup.Run(ctx)
-
-	go func() {
-		lis, err := net.Listen("tcp", fmt.Sprintf(":%d", cfg.GRPCPort))
-		if err != nil {
-			slog.Error("gRPC listen failed", "error", err)
-			return
-		}
-		slog.Info("gRPC server started", "port", cfg.GRPCPort)
-		if err := grpcSrv.Serve(lis); err != nil {
-			slog.Error("gRPC serve failed", "error", err)
-		}
-	}()
-
-	go func() {
-		slog.Info("HTTP server started", "port", cfg.Port)
-		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			slog.Error("HTTP server failed", "error", err)
-			os.Exit(1)
-		}
-	}()
-
-	quit := make(chan os.Signal, 1)
-	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-	<-quit
-
-	slog.Info("shutting down...")
-	cancel()
-
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer shutdownCancel()
-
-	grpcSrv.GracefulStop()
-	if err := httpServer.Shutdown(shutdownCtx); err != nil {
-		slog.Error("HTTP shutdown error", "error", err)
+	slog.Info("gRPC server started", "port", port)
+	if err := g.Serve(lis); err != nil {
+		return fmt.Errorf("gRPC serve: %w", err)
 	}
-	slog.Info("shutdown complete")
+	return nil
+}
+
+func serveHTTP(s *http.Server, port int) error {
+	slog.Info("HTTP server started", "port", port)
+	if err := s.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		return fmt.Errorf("HTTP serve: %w", err)
+	}
 	return nil
 }
 

@@ -67,7 +67,7 @@ func TestScanner_NewRelease(t *testing.T) {
 		},
 	}
 
-	scanner := NewScanner(scannerRepoRepo, subRepo, gh, q, "http://localhost:8080", time.Minute, 1)
+	scanner := NewScanner(scannerRepoRepo, subRepo, gh, q, time.Minute, 1)
 	scanner.scan(context.Background())
 
 	if len(q.enqueuedJobs) != 2 {
@@ -101,7 +101,7 @@ func TestScanner_NoNewRelease(t *testing.T) {
 		},
 	}
 
-	scanner := NewScanner(scannerRepoRepo, &mockSubRepo{}, gh, q, "http://localhost:8080", time.Minute, 1)
+	scanner := NewScanner(scannerRepoRepo, &mockSubRepo{}, gh, q, time.Minute, 1)
 	scanner.scan(context.Background())
 
 	if len(q.enqueuedJobs) != 0 {
@@ -131,7 +131,7 @@ func TestScanner_NoReleases(t *testing.T) {
 		},
 	}
 
-	scanner := NewScanner(scannerRepoRepo, &mockSubRepo{}, gh, q, "http://localhost:8080", time.Minute, 1)
+	scanner := NewScanner(scannerRepoRepo, &mockSubRepo{}, gh, q, time.Minute, 1)
 	scanner.scan(context.Background())
 
 	if len(q.enqueuedJobs) != 0 {
@@ -159,7 +159,7 @@ func TestScanner_GitHubError(t *testing.T) {
 		},
 	}
 
-	scanner := NewScanner(scannerRepoRepo, &mockSubRepo{}, gh, q, "http://localhost:8080", time.Minute, 1)
+	scanner := NewScanner(scannerRepoRepo, &mockSubRepo{}, gh, q, time.Minute, 1)
 	scanner.scan(context.Background())
 
 	if len(q.enqueuedJobs) != 0 {
@@ -176,7 +176,7 @@ func TestScanner_ListReposError(t *testing.T) {
 		},
 	}
 
-	scanner := NewScanner(scannerRepoRepo, &mockSubRepo{}, &mockGitHub{}, q, "http://localhost:8080", time.Minute, 1)
+	scanner := NewScanner(scannerRepoRepo, &mockSubRepo{}, &mockGitHub{}, q, time.Minute, 1)
 	scanner.scan(context.Background())
 
 	if len(q.enqueuedJobs) != 0 {
@@ -207,7 +207,7 @@ func TestScanner_ContextCancelled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // cancel immediately
 
-	scanner := NewScanner(scannerRepoRepo, &mockSubRepo{}, gh, q, "http://localhost:8080", time.Minute, 1)
+	scanner := NewScanner(scannerRepoRepo, &mockSubRepo{}, gh, q, time.Minute, 1)
 	scanner.scan(ctx)
 
 	if callCount > 0 {
@@ -238,7 +238,7 @@ func TestScanner_ListSubscribersError(t *testing.T) {
 		},
 	}
 
-	scanner := NewScanner(scannerRepoRepo, subRepo, gh, q, "http://localhost:8080", time.Minute, 1)
+	scanner := NewScanner(scannerRepoRepo, subRepo, gh, q, time.Minute, 1)
 	scanner.scan(context.Background())
 
 	if len(q.enqueuedJobs) != 0 {
@@ -274,7 +274,7 @@ func TestScanner_EnqueueError(t *testing.T) {
 		},
 	}
 
-	scanner := NewScanner(scannerRepoRepo, subRepo, gh, q, "http://localhost:8080", time.Minute, 1)
+	scanner := NewScanner(scannerRepoRepo, subRepo, gh, q, time.Minute, 1)
 	scanner.scan(context.Background())
 
 	// Enqueue failed, so no jobs should be recorded.
@@ -313,7 +313,7 @@ func TestScanner_UpdateTagError(t *testing.T) {
 		},
 	}
 
-	scanner := NewScanner(scannerRepoRepo, subRepo, gh, q, "http://localhost:8080", time.Minute, 1)
+	scanner := NewScanner(scannerRepoRepo, subRepo, gh, q, time.Minute, 1)
 	scanner.scan(context.Background())
 
 	// Jobs were enqueued but tag update failed — at-least-once delivery.

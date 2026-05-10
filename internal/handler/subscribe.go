@@ -1,8 +1,6 @@
 package handler
 
 import (
-	"errors"
-	"log/slog"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -24,24 +22,14 @@ func Subscribe(svc *service.SubscriptionService) gin.HandlerFunc {
 			return
 		}
 
-		err := svc.Subscribe(c.Request.Context(), req.Email, req.Repo)
-		if err == nil {
-			c.JSON(http.StatusOK, gin.H{"message": "subscription successful, confirmation email sent"})
+		if err := svc.Subscribe(c.Request.Context(), req.Email, req.Repo); err != nil {
+			respondError(c, err, errorMessages{
+				domain.ErrNotFound:    "repository not found on GitHub",
+				domain.ErrConflict:    "email already subscribed to this repository",
+				domain.ErrRateLimited: "GitHub API rate limit exceeded, try again later",
+			})
 			return
 		}
-
-		switch {
-		case errors.Is(err, domain.ErrInvalidInput):
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		case errors.Is(err, domain.ErrNotFound):
-			c.JSON(http.StatusNotFound, gin.H{"error": "repository not found on GitHub"})
-		case errors.Is(err, domain.ErrConflict):
-			c.JSON(http.StatusConflict, gin.H{"error": "email already subscribed to this repository"})
-		case errors.Is(err, domain.ErrRateLimited):
-			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "GitHub API rate limit exceeded, try again later"})
-		default:
-			slog.Error("subscribe failed", "email", req.Email, "repo", req.Repo, "error", err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
-		}
+		c.JSON(http.StatusOK, gin.H{"message": "subscription successful, confirmation email sent"})
 	}
 }
