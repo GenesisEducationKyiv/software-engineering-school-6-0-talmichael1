@@ -14,29 +14,10 @@ func NewLogSender() *LogSender {
 	return &LogSender{}
 }
 
-func (s *LogSender) SendConfirmation(_ context.Context, to, repo, confirmURL string) error {
-	slog.Info("EMAIL (console backend)",
-		"type", "confirmation",
-		"to", to,
-		"repo", repo,
-	)
+func (s *LogSender) Send(_ context.Context, msg Message) error {
+	slog.Info("EMAIL (console backend)", "to", msg.To, "subject", msg.Subject)
 	fmt.Println(strings.Repeat("-", 60))
-	fmt.Printf("To: %s\nSubject: Confirm your subscription to %s releases\n\n", to, repo)
-	fmt.Printf("Please confirm your subscription:\n%s\n", confirmURL)
-	fmt.Println(strings.Repeat("-", 60))
-	return nil
-}
-
-func (s *LogSender) SendReleaseNotification(_ context.Context, to, repo, tag, releaseURL, unsubURL string) error {
-	slog.Info("EMAIL (console backend)",
-		"type", "release_notification",
-		"to", to,
-		"repo", repo,
-		"tag", tag,
-	)
-	fmt.Println(strings.Repeat("-", 60))
-	fmt.Printf("To: %s\nSubject: New release of %s: %s\n\n", to, repo, tag)
-	fmt.Printf("Version: %s\nDetails: %s\n\nUnsubscribe: %s\n", tag, releaseURL, unsubURL)
+	fmt.Printf("To: %s\nSubject: %s\n\n%s\n", msg.To, msg.Subject, msg.Text)
 	fmt.Println(strings.Repeat("-", 60))
 	return nil
 }

@@ -10,8 +10,9 @@ import (
 	"strings"
 
 	"github-release-notifier/internal/domain"
+	"github-release-notifier/internal/email"
 	"github-release-notifier/internal/metrics"
-	"github-release-notifier/internal/repository"
+	"github-release-notifier/internal/urls"
 )
 
 type GitHubChecker interface {
@@ -19,32 +20,43 @@ type GitHubChecker interface {
 	GetLatestRelease(ctx context.Context, owner, repo string) (*domain.Release, error)
 }
 
-type EmailSender interface {
-	SendConfirmation(ctx context.Context, to, repo, confirmURL string) error
-	SendReleaseNotification(ctx context.Context, to, repo, tag, releaseURL, unsubURL string) error
+type subscriptionRepo interface {
+	Create(ctx context.Context, sub *domain.Subscription) error
+	GetByConfirmToken(ctx context.Context, token string) (*domain.Subscription, error)
+	GetByUnsubscribeToken(ctx context.Context, token string) (*domain.Subscription, error)
+	Confirm(ctx context.Context, id int64) error
+	Delete(ctx context.Context, id int64) error
+	ListByEmail(ctx context.Context, email string) ([]domain.SubscriptionView, error)
+}
+
+type repoUpserter interface {
+	GetOrCreate(ctx context.Context, owner, name string) (*domain.Repository, error)
+	UpdateLastSeenTag(ctx context.Context, id int64, tag string) error
 }
 
 type SubscriptionService struct {
-	subRepo  repository.SubscriptionRepo
-	repoRepo repository.RepositoryRepo
-	github   GitHubChecker
-	email    EmailSender
-	baseURL  string
+	subRepo   subscriptionRepo
+	repoRepo  repoUpserter
+	github    GitHubChecker
+	email     email.Sender
+	templates email.Templates
+	urls      urls.Builder
 }
 
 func NewSubscriptionService(
-	subRepo repository.SubscriptionRepo,
-	repoRepo repository.RepositoryRepo,
+	subs subscriptionRepo,
+	repos repoUpserter,
 	github GitHubChecker,
-	email EmailSender,
-	baseURL string,
+	sender email.Sender,
+	urlBuilder urls.Builder,
 ) *SubscriptionService {
 	return &SubscriptionService{
-		subRepo:  subRepo,
-		repoRepo: repoRepo,
-		github:   github,
-		email:    email,
-		baseURL:  baseURL,
+		subRepo:   subs,
+		repoRepo:  repos,
+		github:    github,
+		email:     sender,
+		templates: email.Templates{},
+		urls:      urlBuilder,
 	}
 }
 
@@ -52,57 +64,19 @@ func (s *SubscriptionService) Subscribe(ctx context.Context, emailAddr, repoFull
 	if err := validateEmail(emailAddr); err != nil {
 		return fmt.Errorf("%w: %s", domain.ErrInvalidInput, err.Error())
 	}
-
 	owner, name, err := parseRepoName(repoFullName)
 	if err != nil {
 		return fmt.Errorf("%w: %s", domain.ErrInvalidInput, err.Error())
 	}
 
-	// Try the latest release first to seed last_seen_tag in one call;
-	// fall back to RepoExists when the repo has no releases yet.
-	var initialTag string
-	release, err := s.github.GetLatestRelease(ctx, owner, name)
+	repo, err := s.resolveRepo(ctx, owner, name)
 	if err != nil {
-		if !errors.Is(err, domain.ErrNotFound) {
-			if errors.Is(err, domain.ErrRateLimited) {
-				return err
-			}
-			return fmt.Errorf("checking repository: %w", err)
-		}
-		if err := s.github.RepoExists(ctx, owner, name); err != nil {
-			if errors.Is(err, domain.ErrNotFound) {
-				return domain.ErrNotFound
-			}
-			return fmt.Errorf("checking repository: %w", err)
-		}
-	} else {
-		initialTag = release.TagName
+		return err
 	}
 
-	repo, err := s.repoRepo.GetOrCreate(ctx, owner, name)
+	sub, err := newPendingSubscription(emailAddr, repo.ID)
 	if err != nil {
-		return fmt.Errorf("upserting repository: %w", err)
-	}
-
-	if repo.LastSeenTag == "" && initialTag != "" {
-		_ = s.repoRepo.UpdateLastSeenTag(ctx, repo.ID, initialTag)
-	}
-
-	confirmToken, err := generateToken()
-	if err != nil {
-		return fmt.Errorf("generating confirm token: %w", err)
-	}
-	unsubToken, err := generateToken()
-	if err != nil {
-		return fmt.Errorf("generating unsubscribe token: %w", err)
-	}
-
-	sub := &domain.Subscription{
-		Email:            emailAddr,
-		RepositoryID:     repo.ID,
-		Confirmed:        false,
-		ConfirmToken:     confirmToken,
-		UnsubscribeToken: unsubToken,
+		return err
 	}
 	if err := s.subRepo.Create(ctx, sub); err != nil {
 		if errors.Is(err, domain.ErrConflict) {
@@ -111,14 +85,65 @@ func (s *SubscriptionService) Subscribe(ctx context.Context, emailAddr, repoFull
 		return fmt.Errorf("creating subscription: %w", err)
 	}
 
-	confirmURL := fmt.Sprintf("%s/api/confirm/%s", s.baseURL, confirmToken)
-	if err := s.email.SendConfirmation(ctx, emailAddr, repoFullName, confirmURL); err != nil {
+	msg := s.templates.Confirmation(emailAddr, repoFullName, s.urls.Confirm(sub.ConfirmToken))
+	if err := s.email.Send(ctx, msg); err != nil {
 		// Roll back so the user can retry without hitting ErrConflict.
 		_ = s.subRepo.Delete(ctx, sub.ID) //nolint:errcheck // best-effort rollback
 		return fmt.Errorf("sending confirmation email: %w", err)
 	}
 	metrics.ConfirmationEmailsSent.Inc()
 	return nil
+}
+
+// resolveRepo verifies the repo exists on GitHub, upserts the local row, and
+// seeds last_seen_tag from the current latest release on first sight.
+func (s *SubscriptionService) resolveRepo(ctx context.Context, owner, name string) (*domain.Repository, error) {
+	// Try the latest release first to seed last_seen_tag in one call;
+	// fall back to RepoExists when the repo has no releases yet.
+	var initialTag string
+	release, err := s.github.GetLatestRelease(ctx, owner, name)
+	switch {
+	case err == nil:
+		initialTag = release.TagName
+	case errors.Is(err, domain.ErrNotFound):
+		if err := s.github.RepoExists(ctx, owner, name); err != nil {
+			if errors.Is(err, domain.ErrNotFound) {
+				return nil, domain.ErrNotFound
+			}
+			return nil, fmt.Errorf("checking repository: %w", err)
+		}
+	case errors.Is(err, domain.ErrRateLimited):
+		return nil, err
+	default:
+		return nil, fmt.Errorf("checking repository: %w", err)
+	}
+
+	repo, err := s.repoRepo.GetOrCreate(ctx, owner, name)
+	if err != nil {
+		return nil, fmt.Errorf("upserting repository: %w", err)
+	}
+	if repo.LastSeenTag == "" && initialTag != "" {
+		_ = s.repoRepo.UpdateLastSeenTag(ctx, repo.ID, initialTag) //nolint:errcheck // tag seed is best-effort
+	}
+	return repo, nil
+}
+
+func newPendingSubscription(emailAddr string, repoID int64) (*domain.Subscription, error) {
+	confirmToken, err := generateToken()
+	if err != nil {
+		return nil, fmt.Errorf("generating confirm token: %w", err)
+	}
+	unsubToken, err := generateToken()
+	if err != nil {
+		return nil, fmt.Errorf("generating unsubscribe token: %w", err)
+	}
+	return &domain.Subscription{
+		Email:            emailAddr,
+		RepositoryID:     repoID,
+		Confirmed:        false,
+		ConfirmToken:     confirmToken,
+		UnsubscribeToken: unsubToken,
+	}, nil
 }
 
 func (s *SubscriptionService) Confirm(ctx context.Context, token string) error {

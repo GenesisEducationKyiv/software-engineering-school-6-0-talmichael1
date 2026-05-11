@@ -8,7 +8,9 @@ import (
 	"time"
 
 	"github-release-notifier/internal/domain"
+	"github-release-notifier/internal/email"
 	"github-release-notifier/internal/metrics"
+	"github-release-notifier/internal/urls"
 )
 
 const maxRetries = 5
@@ -22,16 +24,18 @@ type JobDequeuer interface {
 
 type Notifier struct {
 	queue      JobDequeuer
-	email      EmailSender
-	baseURL    string
+	email      email.Sender
+	templates  email.Templates
+	urls       urls.Builder
 	numWorkers int
 }
 
-func NewNotifier(queue JobDequeuer, email EmailSender, baseURL string, numWorkers int) *Notifier {
+func NewNotifier(queue JobDequeuer, sender email.Sender, urlBuilder urls.Builder, numWorkers int) *Notifier {
 	return &Notifier{
 		queue:      queue,
-		email:      email,
-		baseURL:    baseURL,
+		email:      sender,
+		templates:  email.Templates{},
+		urls:       urlBuilder,
 		numWorkers: numWorkers,
 	}
 }
@@ -92,9 +96,10 @@ func (n *Notifier) processJob(ctx context.Context, job *domain.NotificationJob) 
 		return nil
 	}
 
-	unsubURL := fmt.Sprintf("%s/api/unsubscribe/%s", n.baseURL, job.UnsubToken)
+	unsubURL := n.urls.Unsubscribe(job.UnsubToken)
+	msg := n.templates.ReleaseNotification(job.Email, job.Repo, job.Tag, job.ReleaseURL, unsubURL)
 
-	err = n.email.SendReleaseNotification(ctx, job.Email, job.Repo, job.Tag, job.ReleaseURL, unsubURL)
+	err = n.email.Send(ctx, msg)
 	if err != nil {
 		if job.Attempt < maxRetries {
 			slog.Warn("notification send failed, requeuing",
