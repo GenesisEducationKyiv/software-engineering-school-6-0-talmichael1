@@ -1,0 +1,42 @@
+version: "2"
+
+run:
+  timeout: 5m
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+
+linters:
+  enable:
+    - errcheck
+    - govet
+    - staticcheck
+    - unused
+    - ineffassign
+    - misspell
+    - gocritic
+    - gocyclo
+    - dupl
+
+  settings:
+    errcheck:
+      check-blank: false
+    govet:
+      enable-all: true
+      disable:
+        - shadow
+        - fieldalignment
+    gocyclo:
+      min-complexity: 20
+    dupl:
+      threshold: 150
+
+  exclusions:
+    paths:
+      - internal/grpc/proto
+    rules:
+      - path: _test\.go
+        linters:
+          - errcheck

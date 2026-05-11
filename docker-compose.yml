@@ -1,0 +1,78 @@
+services:
+  app:
+    build: .
+    env_file:
+      - .env
+    ports:
+      - "8080:8080"
+      - "9090:9090"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      PORT: "8080"
+      GRPC_PORT: "9090"
+      DATABASE_URL: "postgres://notifier:notifier@postgres:5432/release_notifier?sslmode=disable"
+      REDIS_URL: "redis://redis:6379/0"
+      BASE_URL: "http://localhost:3000"
+      MAILGUN_DOMAIN: "${MAILGUN_DOMAIN}"
+      MAILGUN_API_KEY: "${MAILGUN_API_KEY}"
+      MAILGUN_FROM: "${MAILGUN_FROM:-noreply@releases.app}"
+      GITHUB_TOKEN: "${GITHUB_TOKEN:-}"
+      API_KEY: "${API_KEY:-}"
+      CORS_ORIGINS: "http://localhost:3000"
+      SCAN_INTERVAL: "5m"
+      NOTIFICATION_WORKERS: "10"
+      OTEL_ENABLED: "true"
+      JAEGER_ENDPOINT: "http://jaeger:4318/v1/traces"
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: notifier
+      POSTGRES_PASSWORD: notifier
+      POSTGRES_DB: release_notifier
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U notifier -d release_notifier"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.54
+    ports:
+      - "16686:16686"
+      - "4318:4318"
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+      MEMORY_MAX_TRACES: "100000"
+
+  frontend:
+    image: nginx:alpine
+    ports:
+      - "3000:80"
+    volumes:
+      - ./web/index.html:/usr/share/nginx/html/index.html:ro
+      - ./web/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - app
+
+volumes:
+  pgdata:
