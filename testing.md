@@ -16,7 +16,7 @@ go test -race -count=1 ./...
 docker compose -f docker-compose.test.yml -p notifier-test up --exit-code-from tests
 ```
 
-Піднімає чистий Postgres + контейнер з Go, який ганяє `go test -tags=integration` по `internal/integration/...` та `internal/repository/postgres/...`. GitHub і email замокані — креди не потрібні.
+Піднімає чистий Postgres + контейнер з Go, який ганяє `go test -tags=integration ./...`. Раннер пробігає по всьому модулю — щоб додати новий інтеграційний тест, достатньо поставити `//go:build integration` зверху файлу, нічого не треба реєструвати в compose. GitHub і email замокані — креди не потрібні.
 
 Прибрати після:
 
@@ -30,7 +30,7 @@ docker compose -f docker-compose.test.yml -p notifier-test down -v
 docker compose -f docker-compose.e2e.yml -p notifier-e2e up --build --exit-code-from tests
 ```
 
-Піднімає весь стек (postgres + redis + app + nginx) + контейнер з Playwright-Go (Chromium всередині), який проганяє два сценарії в `tests/e2e/`:
+Піднімає весь стек (postgres + redis + app + nginx) + контейнер з Playwright-Go (Chromium всередині), який проганяє сценарії з `tests/e2e/` (build-тег `e2e`). Новий e2e-кейс — це функція `Test...` у `tests/e2e/` з тим самим тегом, реєстрація в compose не потрібна. Поточні сценарії:
 
 1. Підписка через форму → бачимо success-alert.
 2. Лукап email → бачимо репо в списку з бейджем «Pending».

@@ -30,8 +30,7 @@ services:
       - -count=1
       - -p=1
       - -tags=integration
-      - ./internal/integration/...
-      - ./internal/repository/postgres/...
+      - ./...
 
 volumes:
   go-modcache:
