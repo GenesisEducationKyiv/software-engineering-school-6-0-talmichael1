@@ -1,0 +1,82 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: notifier
+      POSTGRES_PASSWORD: notifier
+      POSTGRES_DB: release_notifier
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U notifier -d release_notifier"]
+      interval: 2s
+      timeout: 2s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 20
+
+  app:
+    build: .
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      PORT: "8080"
+      GRPC_PORT: "9090"
+      DATABASE_URL: "postgres://notifier:notifier@postgres:5432/release_notifier?sslmode=disable"
+      REDIS_URL: "redis://redis:6379/0"
+      BASE_URL: "http://frontend"
+      CORS_ORIGINS: "*"
+      GITHUB_TOKEN: ""
+      MAILGUN_DOMAIN: ""
+      MAILGUN_API_KEY: ""
+      OTEL_ENABLED: "false"
+      SCAN_INTERVAL: "30m"
+      NOTIFICATION_WORKERS: "2"
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/health"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  frontend:
+    image: nginx:alpine
+    depends_on:
+      app:
+        condition: service_healthy
+    volumes:
+      - ./web/index.html:/usr/share/nginx/html/index.html:ro
+      - ./web/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+
+  tests:
+    build:
+      context: .
+      dockerfile: tests/e2e/Dockerfile
+    depends_on:
+      app:
+        condition: service_healthy
+      frontend:
+        condition: service_started
+    working_dir: /src
+    volumes:
+      - .:/src
+      - go-modcache:/go/pkg/mod
+      - go-buildcache:/go/cache
+      - pw-cache:/root/.cache/ms-playwright-go
+      - pw-browsers:/ms-playwright
+    environment:
+      E2E_BASE_URL: http://localhost
+      E2E_HOST_RESOLVER_RULES: MAP localhost frontend
+    command: ["go", "test", "-count=1", "-tags=e2e", "./tests/e2e/..."]
+
+volumes:
+  go-modcache:
+  go-buildcache:
+  pw-cache:
+  pw-browsers:

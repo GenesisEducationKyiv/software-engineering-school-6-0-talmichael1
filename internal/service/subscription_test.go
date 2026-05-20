@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github-release-notifier/internal/domain"
+	"github-release-notifier/internal/email"
+	"github-release-notifier/internal/urls"
 )
 
 type mockSubRepo struct {
@@ -106,16 +108,13 @@ func (m *mockGitHub) GetLatestRelease(ctx context.Context, owner, repo string) (
 }
 
 type mockEmail struct {
-	sendConfirmFn func(ctx context.Context, to, repo, confirmURL string) error
+	sendFn func(ctx context.Context, msg email.Message) error
 }
 
-func (m *mockEmail) SendConfirmation(ctx context.Context, to, repo, confirmURL string) error {
-	if m.sendConfirmFn != nil {
-		return m.sendConfirmFn(ctx, to, repo, confirmURL)
+func (m *mockEmail) Send(ctx context.Context, msg email.Message) error {
+	if m.sendFn != nil {
+		return m.sendFn(ctx, msg)
 	}
-	return nil
-}
-func (m *mockEmail) SendReleaseNotification(ctx context.Context, to, repo, tag, releaseURL, unsubURL string) error {
 	return nil
 }
 
@@ -125,7 +124,7 @@ func newTestService(opts ...func(*SubscriptionService)) *SubscriptionService {
 		&mockRepoRepo{},
 		&mockGitHub{},
 		&mockEmail{},
-		"http://localhost:8080",
+		urls.Builder{BaseURL: "http://localhost:8080"},
 	)
 	for _, opt := range opts {
 		opt(svc)
@@ -185,8 +184,8 @@ func TestSubscribe_Success(t *testing.T) {
 	var sentTo string
 	svc := newTestService(func(s *SubscriptionService) {
 		s.email = &mockEmail{
-			sendConfirmFn: func(ctx context.Context, to, repo, confirmURL string) error {
-				sentTo = to
+			sendFn: func(ctx context.Context, msg email.Message) error {
+				sentTo = msg.To
 				return nil
 			},
 		}
@@ -316,7 +315,7 @@ func TestSubscribe_EmailSendFailure_RollsBack(t *testing.T) {
 			},
 		}
 		s.email = &mockEmail{
-			sendConfirmFn: func(ctx context.Context, to, repo, confirmURL string) error {
+			sendFn: func(ctx context.Context, msg email.Message) error {
 				return fmt.Errorf("SMTP connection refused")
 			},
 		}
@@ -354,8 +353,8 @@ func TestSubscribe_RepoExistsButNoReleases(t *testing.T) {
 			},
 		}
 		s.email = &mockEmail{
-			sendConfirmFn: func(ctx context.Context, to, repo, confirmURL string) error {
-				sentTo = to
+			sendFn: func(ctx context.Context, msg email.Message) error {
+				sentTo = msg.To
 				return nil
 			},
 		}

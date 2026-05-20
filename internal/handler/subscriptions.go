@@ -1,8 +1,6 @@
 package handler
 
 import (
-	"errors"
-	"log/slog"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -21,15 +19,9 @@ func Subscriptions(svc *service.SubscriptionService) gin.HandlerFunc {
 
 		views, err := svc.ListByEmail(c.Request.Context(), email)
 		if err != nil {
-			if errors.Is(err, domain.ErrInvalidInput) {
-				c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-				return
-			}
-			slog.Error("list subscriptions failed", "email", email, "error", err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+			respondError(c, err, nil)
 			return
 		}
-
 		if views == nil {
 			views = []domain.SubscriptionView{}
 		}

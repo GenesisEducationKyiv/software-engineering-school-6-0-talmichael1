@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github-release-notifier/internal/domain"
+	"github-release-notifier/internal/email"
 )
 
 type mockSubRepoHandler struct {
@@ -77,7 +78,4 @@ func (m *mockGitHubHandler) GetLatestRelease(_ context.Context, _, _ string) (*d
 
 type mockEmailHandler struct{}
 
-func (m *mockEmailHandler) SendConfirmation(_ context.Context, _, _, _ string) error { return nil }
-func (m *mockEmailHandler) SendReleaseNotification(_ context.Context, _, _, _, _, _ string) error {
-	return nil
-}
+func (m *mockEmailHandler) Send(_ context.Context, _ email.Message) error { return nil }
