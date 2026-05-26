@@ -14,6 +14,11 @@ import (
 	"github-release-notifier/internal/metrics"
 )
 
+const (
+	scanLockKey        = "scanner:leader"
+	repoDequeueTimeout = 5 * time.Second
+)
+
 type NotificationEnqueuer interface {
 	EnqueueBatch(ctx context.Context, jobs []domain.NotificationJob) error
 }
@@ -29,13 +34,24 @@ type scannerSubStore interface {
 	CountConfirmed(ctx context.Context) (int64, error)
 }
 
+type repoCheckQueue interface {
+	EnqueueRepo(ctx context.Context, repo domain.Repository) error
+	DequeueRepo(ctx context.Context, timeout time.Duration) (*domain.Repository, error)
+}
+
+type leaderLock interface {
+	Acquire(ctx context.Context, key string, ttl time.Duration) (bool, error)
+}
+
 type Scanner struct {
-	repoRepo scannerRepoStore
-	subRepo  scannerSubStore
-	github   GitHubChecker
-	queue    NotificationEnqueuer
-	interval time.Duration
-	workers  int
+	repoRepo   scannerRepoStore
+	subRepo    scannerSubStore
+	github     GitHubChecker
+	queue      NotificationEnqueuer
+	repoChecks repoCheckQueue
+	lock       leaderLock
+	interval   time.Duration
+	workers    int
 }
 
 func NewScanner(
@@ -43,6 +59,8 @@ func NewScanner(
 	subs scannerSubStore,
 	github GitHubChecker,
 	queue NotificationEnqueuer,
+	repoChecks repoCheckQueue,
+	lock leaderLock,
 	interval time.Duration,
 	workers int,
 ) *Scanner {
@@ -50,34 +68,78 @@ func NewScanner(
 		workers = 1
 	}
 	return &Scanner{
-		repoRepo: repos,
-		subRepo:  subs,
-		github:   github,
-		queue:    queue,
-		interval: interval,
-		workers:  workers,
+		repoRepo:   repos,
+		subRepo:    subs,
+		github:     github,
+		queue:      queue,
+		repoChecks: repoChecks,
+		lock:       lock,
+		interval:   interval,
+		workers:    workers,
 	}
 }
 
 func (s *Scanner) Run(ctx context.Context) {
-	slog.Info("scanner started", "interval", s.interval)
+	slog.Info("scanner started", "interval", s.interval, "workers", s.workers)
+
+	var wg sync.WaitGroup
+	for range s.workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			s.worker(ctx)
+		}()
+	}
+
 	ticker := time.NewTicker(s.interval)
 	defer ticker.Stop()
 
-	// Scan once on startup, then on each tick.
-	s.scan(ctx)
+	s.enqueueDueRepos(ctx)
 	for {
 		select {
 		case <-ctx.Done():
 			slog.Info("scanner stopped")
+			wg.Wait()
 			return
 		case <-ticker.C:
-			s.scan(ctx)
+			s.enqueueDueRepos(ctx)
 		}
 	}
 }
 
-func (s *Scanner) scan(ctx context.Context) {
+func (s *Scanner) worker(ctx context.Context) {
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+		repo, err := s.repoChecks.DequeueRepo(ctx, repoDequeueTimeout)
+		if err != nil {
+			if ctx.Err() != nil {
+				return
+			}
+			slog.Error("scanner: dequeue repo", "error", err)
+			continue
+		}
+		if repo == nil {
+			continue
+		}
+		if err := s.checkRepo(ctx, *repo); err != nil {
+			slog.Error("scanner: checking repo", "repo", repo.FullName(), "error", err)
+		}
+	}
+}
+
+func (s *Scanner) enqueueDueRepos(ctx context.Context) {
+	acquired, err := s.lock.Acquire(ctx, scanLockKey, s.interval/2)
+	if err != nil {
+		slog.Error("scanner: acquiring leader lock", "error", err)
+		return
+	}
+	if !acquired {
+		slog.Debug("scanner: another instance is leader, skipping enqueue")
+		return
+	}
+
 	metrics.ScannerRuns.Inc()
 	timer := prometheus.NewTimer(metrics.ScannerDuration)
 	defer timer.ObserveDuration()
@@ -91,33 +153,16 @@ func (s *Scanner) scan(ctx context.Context) {
 		slog.Error("scanner: listing repos", "error", err)
 		return
 	}
-	slog.Info("scanner: checking repositories", "count", len(repos), "workers", s.workers)
-
-	ch := make(chan domain.Repository)
-	var wg sync.WaitGroup
-
-	for range s.workers {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for repo := range ch {
-				if err := s.checkRepo(ctx, repo); err != nil {
-					slog.Error("scanner: checking repo",
-						"repo", repo.FullName(),
-						"error", err)
-				}
-			}
-		}()
-	}
+	slog.Info("scanner: enqueueing repositories", "count", len(repos))
 
 	for _, repo := range repos {
 		if ctx.Err() != nil {
-			break
+			return
 		}
-		ch <- repo
+		if err := s.repoChecks.EnqueueRepo(ctx, repo); err != nil {
+			slog.Error("scanner: enqueueing repo", "repo", repo.FullName(), "error", err)
+		}
 	}
-	close(ch)
-	wg.Wait()
 }
 
 func (s *Scanner) checkRepo(ctx context.Context, repo domain.Repository) error {

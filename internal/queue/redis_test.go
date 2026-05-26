@@ -20,6 +20,80 @@ func newTestQueue(t *testing.T) (*NotificationQueue, *miniredis.Miniredis) {
 	return NewNotificationQueue(rdb), mr
 }
 
+func dial(t *testing.T, mr *miniredis.Miniredis) *redis.Client {
+	t.Helper()
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	t.Cleanup(func() { _ = rdb.Close() })
+	return rdb
+}
+
+func processingMembers(t *testing.T, rdb *redis.Client) []string {
+	t.Helper()
+	members, err := rdb.ZRange(context.Background(), processingQueue, 0, -1).Result()
+	if err != nil {
+		t.Fatalf("reading processing zset: %v", err)
+	}
+	return members
+}
+
+func newTestRepoCheckQueue(t *testing.T) (*RepoCheckQueue, *miniredis.Miniredis) {
+	t.Helper()
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	t.Cleanup(func() { _ = rdb.Close() })
+	return NewRepoCheckQueue(rdb), mr
+}
+
+func TestEnqueueRepo_PushesToList(t *testing.T) {
+	q, mr := newTestRepoCheckQueue(t)
+
+	repo := domain.Repository{ID: 1, Owner: "golang", Name: "go", LastSeenTag: "v1.0.0"}
+	if err := q.EnqueueRepo(context.Background(), repo); err != nil {
+		t.Fatalf("EnqueueRepo: %v", err)
+	}
+
+	items, err := mr.List(repoCheckQueue)
+	if err != nil {
+		t.Fatalf("reading list %q: %v", repoCheckQueue, err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("list length = %d, want 1", len(items))
+	}
+}
+
+func TestDequeueRepo_RoundTrips(t *testing.T) {
+	q, _ := newTestRepoCheckQueue(t)
+	ctx := context.Background()
+
+	repo := domain.Repository{ID: 42, Owner: "gin-gonic", Name: "gin", LastSeenTag: "v1.9.0"}
+	if err := q.EnqueueRepo(ctx, repo); err != nil {
+		t.Fatalf("EnqueueRepo: %v", err)
+	}
+
+	got, err := q.DequeueRepo(ctx, 100*time.Millisecond)
+	if err != nil {
+		t.Fatalf("DequeueRepo: %v", err)
+	}
+	if got == nil {
+		t.Fatal("DequeueRepo returned nil, expected a repo")
+	}
+	if got.ID != repo.ID || got.FullName() != "gin-gonic/gin" || got.LastSeenTag != "v1.9.0" {
+		t.Fatalf("round-trip mismatch: got %+v, want %+v", *got, repo)
+	}
+}
+
+func TestDequeueRepo_EmptyReturnsNilNil(t *testing.T) {
+	q, _ := newTestRepoCheckQueue(t)
+
+	got, err := q.DequeueRepo(context.Background(), 50*time.Millisecond)
+	if err != nil {
+		t.Fatalf("expected (nil, nil) on empty queue, got err: %v", err)
+	}
+	if got != nil {
+		t.Fatalf("expected nil repo, got %+v", got)
+	}
+}
+
 func sampleJob(id int64, tag string) domain.NotificationJob {
 	return domain.NotificationJob{
 		SubscriptionID: id,
@@ -206,6 +280,159 @@ func TestIsSent_KeysAreScopedByIDAndTag(t *testing.T) {
 	}
 	if sent {
 		t.Fatal("dedup must not leak across tags")
+	}
+}
+
+func TestDequeue_MovesJobToProcessing(t *testing.T) {
+	q, mr := newTestQueue(t)
+	ctx := context.Background()
+	job := sampleJob(1, "v1.0.0")
+	if err := q.Enqueue(ctx, job); err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+
+	got, err := q.Dequeue(ctx, 100*time.Millisecond)
+	if err != nil {
+		t.Fatalf("Dequeue: %v", err)
+	}
+	if got == nil || *got != job {
+		t.Fatalf("Dequeue returned %+v, want %+v", got, job)
+	}
+
+	// The job must no longer sit in pending...
+	if mr.Exists(pendingQueue) {
+		t.Fatalf("pending list should be empty after dequeue")
+	}
+	// ...but must be held in the processing set with a visibility deadline so a
+	// crash can't lose it.
+	members := processingMembers(t, dial(t, mr))
+	if len(members) != 1 {
+		t.Fatalf("processing length = %d, want 1 (in-flight job)", len(members))
+	}
+	var inflight domain.NotificationJob
+	if err := json.Unmarshal([]byte(members[0]), &inflight); err != nil {
+		t.Fatalf("processing payload is not valid JSON: %v", err)
+	}
+	if inflight != job {
+		t.Fatalf("processing payload = %+v, want %+v", inflight, job)
+	}
+}
+
+func TestAck_RemovesJobFromProcessing(t *testing.T) {
+	q, mr := newTestQueue(t)
+	ctx := context.Background()
+	job := sampleJob(1, "v1.0.0")
+	if err := q.Enqueue(ctx, job); err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+	got, err := q.Dequeue(ctx, 100*time.Millisecond)
+	if err != nil {
+		t.Fatalf("Dequeue: %v", err)
+	}
+
+	if err := q.Ack(ctx, *got); err != nil {
+		t.Fatalf("Ack: %v", err)
+	}
+
+	if mr.Exists(processingQueue) {
+		t.Fatalf("processing list should be empty after Ack")
+	}
+}
+
+func TestReclaim_MovesExpiredJobsBackToPending(t *testing.T) {
+	q, mr := newTestQueue(t)
+	ctx := context.Background()
+	rdb := dial(t, mr)
+
+	job := sampleJob(7, "v9.9.9")
+	data, err := json.Marshal(job)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	// An in-flight job whose visibility deadline is already in the past: its
+	// worker is presumed dead.
+	if err := rdb.ZAdd(ctx, processingQueue, redis.Z{Score: 1, Member: data}).Err(); err != nil {
+		t.Fatalf("seed processing: %v", err)
+	}
+
+	n, err := q.Reclaim(ctx)
+	if err != nil {
+		t.Fatalf("Reclaim: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("reclaimed %d jobs, want 1", n)
+	}
+	if len(processingMembers(t, rdb)) != 0 {
+		t.Fatalf("processing set should be empty after reclaim")
+	}
+
+	got, err := q.Dequeue(ctx, 100*time.Millisecond)
+	if err != nil {
+		t.Fatalf("Dequeue after reclaim: %v", err)
+	}
+	if got == nil || *got != job {
+		t.Fatalf("reclaimed job = %+v, want %+v", got, job)
+	}
+}
+
+func TestReclaim_LeavesLiveJobs(t *testing.T) {
+	q, mr := newTestQueue(t)
+	ctx := context.Background()
+	rdb := dial(t, mr)
+
+	job := sampleJob(8, "v1.2.3")
+	data, err := json.Marshal(job)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	// Deadline well in the future: a healthy worker still holds it.
+	future := float64(time.Now().Add(time.Hour).UnixMilli())
+	if err := rdb.ZAdd(ctx, processingQueue, redis.Z{Score: future, Member: data}).Err(); err != nil {
+		t.Fatalf("seed processing: %v", err)
+	}
+
+	n, err := q.Reclaim(ctx)
+	if err != nil {
+		t.Fatalf("Reclaim: %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("reclaimed %d jobs, want 0 (job still within visibility deadline)", n)
+	}
+	if len(processingMembers(t, rdb)) != 1 {
+		t.Fatalf("live in-flight job must remain in processing")
+	}
+}
+
+func TestRequeue_RemovesOriginalFromProcessing(t *testing.T) {
+	q, mr := newTestQueue(t)
+	ctx := context.Background()
+	job := sampleJob(1, "v1.0.0")
+	if err := q.Enqueue(ctx, job); err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+	got, err := q.Dequeue(ctx, 100*time.Millisecond)
+	if err != nil {
+		t.Fatalf("Dequeue: %v", err)
+	}
+
+	if err := q.Requeue(ctx, *got); err != nil {
+		t.Fatalf("Requeue: %v", err)
+	}
+
+	// The in-flight copy must be cleared from processing...
+	if mr.Exists(processingQueue) {
+		t.Fatalf("processing set should be empty after Requeue")
+	}
+	// ...and a retry copy (incremented attempt) waiting in pending.
+	next, err := q.Dequeue(ctx, 100*time.Millisecond)
+	if err != nil {
+		t.Fatalf("Dequeue retry: %v", err)
+	}
+	if next == nil {
+		t.Fatal("expected a requeued job in pending")
+	}
+	if next.Attempt != 1 {
+		t.Fatalf("requeued Attempt = %d, want 1", next.Attempt)
 	}
 }
 

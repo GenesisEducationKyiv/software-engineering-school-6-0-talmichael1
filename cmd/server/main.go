@@ -32,6 +32,7 @@ import (
 	grpcserver "github-release-notifier/internal/grpc"
 	pb "github-release-notifier/internal/grpc/proto"
 	"github-release-notifier/internal/handler"
+	"github-release-notifier/internal/lock"
 	"github-release-notifier/internal/queue"
 	"github-release-notifier/internal/repository/postgres"
 	"github-release-notifier/internal/service"
@@ -188,10 +189,12 @@ func buildServices(cfg *config.Config, db *sqlx.DB, rdb *redis.Client) (
 	}
 
 	notifQueue := queue.NewNotificationQueue(rdb)
+	repoCheckQueue := queue.NewRepoCheckQueue(rdb)
+	scanLock := lock.NewRedisLock(rdb)
 	urlBuilder := urls.Builder{BaseURL: cfg.BaseURL}
 
 	subscriptionSvc := service.NewSubscriptionService(subStore, repoStore, cachedGH, mailer, urlBuilder)
-	scanner := service.NewScanner(repoStore, subStore, cachedGH, notifQueue, cfg.ScanInterval, cfg.ScanWorkers)
+	scanner := service.NewScanner(repoStore, subStore, cachedGH, notifQueue, repoCheckQueue, scanLock, cfg.ScanInterval, cfg.ScanWorkers)
 	notifier := service.NewNotifier(notifQueue, mailer, urlBuilder, cfg.NotificationWorkers)
 	cleanup := service.NewCleanup(subStore)
 	return subscriptionSvc, scanner, notifier, cleanup
