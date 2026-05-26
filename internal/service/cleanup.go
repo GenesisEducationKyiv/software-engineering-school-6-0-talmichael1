@@ -4,8 +4,6 @@ import (
 	"context"
 	"log/slog"
 	"time"
-
-	"github-release-notifier/internal/repository"
 )
 
 const (
@@ -13,12 +11,16 @@ const (
 	maxUnconfirmedAge = 1 * time.Hour
 )
 
-type Cleanup struct {
-	subRepo repository.SubscriptionRepo
+type unconfirmedDeleter interface {
+	DeleteUnconfirmedOlderThan(ctx context.Context, age time.Duration) (int64, error)
 }
 
-func NewCleanup(subRepo repository.SubscriptionRepo) *Cleanup {
-	return &Cleanup{subRepo: subRepo}
+type Cleanup struct {
+	subRepo unconfirmedDeleter
+}
+
+func NewCleanup(subs unconfirmedDeleter) *Cleanup {
+	return &Cleanup{subRepo: subs}
 }
 
 func (c *Cleanup) Run(ctx context.Context) {

@@ -8,13 +8,20 @@ import (
 	"time"
 
 	"github-release-notifier/internal/domain"
+	"github-release-notifier/internal/email"
 	"github-release-notifier/internal/metrics"
+	"github-release-notifier/internal/urls"
 )
 
-const maxRetries = 5
+const (
+	maxRetries   = 5
+	reapInterval = 30 * time.Second
+)
 
 type JobDequeuer interface {
 	Dequeue(ctx context.Context, timeout time.Duration) (*domain.NotificationJob, error)
+	Ack(ctx context.Context, job domain.NotificationJob) error
+	Reclaim(ctx context.Context) (int, error)
 	IsSent(ctx context.Context, subscriptionID int64, tag string) (bool, error)
 	MarkSent(ctx context.Context, subscriptionID int64, tag string) error
 	Requeue(ctx context.Context, job domain.NotificationJob) error
@@ -22,16 +29,18 @@ type JobDequeuer interface {
 
 type Notifier struct {
 	queue      JobDequeuer
-	email      EmailSender
-	baseURL    string
+	email      email.Sender
+	templates  email.Templates
+	urls       urls.Builder
 	numWorkers int
 }
 
-func NewNotifier(queue JobDequeuer, email EmailSender, baseURL string, numWorkers int) *Notifier {
+func NewNotifier(queue JobDequeuer, sender email.Sender, urlBuilder urls.Builder, numWorkers int) *Notifier {
 	return &Notifier{
 		queue:      queue,
-		email:      email,
-		baseURL:    baseURL,
+		email:      sender,
+		templates:  email.Templates{},
+		urls:       urlBuilder,
 		numWorkers: numWorkers,
 	}
 }
@@ -48,8 +57,39 @@ func (n *Notifier) Run(ctx context.Context) {
 		}(i)
 	}
 
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		n.reaper(ctx)
+	}()
+
 	wg.Wait()
 	slog.Info("notifier stopped")
+}
+
+func (n *Notifier) reaper(ctx context.Context) {
+	n.reclaim(ctx)
+	ticker := time.NewTicker(reapInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			n.reclaim(ctx)
+		}
+	}
+}
+
+func (n *Notifier) reclaim(ctx context.Context) {
+	reclaimed, err := n.queue.Reclaim(ctx)
+	if err != nil {
+		slog.Error("notifier: reclaiming expired jobs", "error", err)
+		return
+	}
+	if reclaimed > 0 {
+		slog.Warn("notifier: reclaimed expired in-flight jobs", "count", reclaimed)
+	}
 }
 
 func (n *Notifier) worker(ctx context.Context, id int) {
@@ -89,12 +129,14 @@ func (n *Notifier) processJob(ctx context.Context, job *domain.NotificationJob) 
 		slog.Debug("duplicate notification skipped",
 			"subscription_id", job.SubscriptionID,
 			"tag", job.Tag)
+		n.ack(ctx, job)
 		return nil
 	}
 
-	unsubURL := fmt.Sprintf("%s/api/unsubscribe/%s", n.baseURL, job.UnsubToken)
+	unsubURL := n.urls.Unsubscribe(job.UnsubToken)
+	msg := n.templates.ReleaseNotification(job.Email, job.Repo, job.Tag, job.ReleaseURL, unsubURL)
 
-	err = n.email.SendReleaseNotification(ctx, job.Email, job.Repo, job.Tag, job.ReleaseURL, unsubURL)
+	err = n.email.Send(ctx, msg)
 	if err != nil {
 		if job.Attempt < maxRetries {
 			slog.Warn("notification send failed, requeuing",
@@ -104,16 +146,17 @@ func (n *Notifier) processJob(ctx context.Context, job *domain.NotificationJob) 
 			return n.queue.Requeue(ctx, *job)
 		}
 		metrics.NotificationsFailed.Inc()
+		n.ack(ctx, job)
 		return fmt.Errorf("max retries exceeded for %s: %w", job.Email, err)
 	}
 
-	// Mark only after successful delivery — at-least-once guarantee.
 	if err := n.queue.MarkSent(ctx, job.SubscriptionID, job.Tag); err != nil {
 		slog.Error("failed to mark notification as sent (email was delivered)",
 			"subscription_id", job.SubscriptionID,
 			"tag", job.Tag,
 			"error", err)
 	}
+	n.ack(ctx, job)
 	metrics.NotificationsSent.Inc()
 
 	slog.Info("notification sent",
@@ -121,4 +164,13 @@ func (n *Notifier) processJob(ctx context.Context, job *domain.NotificationJob) 
 		"repo", job.Repo,
 		"tag", job.Tag)
 	return nil
+}
+
+func (n *Notifier) ack(ctx context.Context, job *domain.NotificationJob) {
+	if err := n.queue.Ack(ctx, *job); err != nil {
+		slog.Error("notifier: ack failed",
+			"subscription_id", job.SubscriptionID,
+			"tag", job.Tag,
+			"error", err)
+	}
 }

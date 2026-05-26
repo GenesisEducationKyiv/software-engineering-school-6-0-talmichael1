@@ -20,9 +20,11 @@ import (
 	_ "github.com/lib/pq"
 
 	"github-release-notifier/internal/domain"
+	"github-release-notifier/internal/email"
 	"github-release-notifier/internal/handler"
 	"github-release-notifier/internal/repository/postgres"
 	"github-release-notifier/internal/service"
+	"github-release-notifier/internal/urls"
 	"github-release-notifier/migrations"
 )
 
@@ -44,17 +46,11 @@ func (s *stubGitHub) GetLatestRelease(ctx context.Context, owner, repo string) (
 
 // stubEmail logs emails instead of sending them.
 type stubEmail struct {
-	lastTo         string
-	lastConfirmURL string
+	lastTo string
 }
 
-func (s *stubEmail) SendConfirmation(ctx context.Context, to, repo, confirmURL string) error {
-	s.lastTo = to
-	s.lastConfirmURL = confirmURL
-	return nil
-}
-
-func (s *stubEmail) SendReleaseNotification(ctx context.Context, to, repo, tag, releaseURL, unsubURL string) error {
+func (s *stubEmail) Send(_ context.Context, msg email.Message) error {
+	s.lastTo = msg.To
 	return nil
 }
 
@@ -106,7 +102,7 @@ func setupRouter(emailStub *stubEmail) *gin.Engine {
 	repoStore := postgres.NewRepositoryStore(testDB)
 	subStore := postgres.NewSubscriptionStore(testDB)
 
-	svc := service.NewSubscriptionService(subStore, repoStore, &stubGitHub{}, emailStub, "http://localhost:8080")
+	svc := service.NewSubscriptionService(subStore, repoStore, &stubGitHub{}, emailStub, urls.Builder{BaseURL: "http://localhost:8080"})
 
 	router := gin.New()
 	api := router.Group("/api")

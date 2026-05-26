@@ -10,7 +10,6 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"github-release-notifier/internal/domain"
-	"github-release-notifier/internal/github"
 )
 
 const (
@@ -19,10 +18,10 @@ const (
 	existsSentinel   = "__exists__"
 )
 
-// upstream is the subset of the GitHub client that the cache wraps. Kept as
+// GitHubAPI is the subset of the GitHub client that the cache wraps. Kept as
 // an interface so tests can substitute a fake without touching the real HTTP
 // client.
-type upstream interface {
+type GitHubAPI interface {
 	RepoExists(ctx context.Context, owner, repo string) error
 	GetLatestRelease(ctx context.Context, owner, repo string) (*domain.Release, error)
 }
@@ -31,11 +30,11 @@ type upstream interface {
 // and 404 responses. Rate-limit (429) and transient errors are never cached so
 // the next caller can retry freely.
 type CachedGitHubClient struct {
-	client upstream
+	client GitHubAPI
 	rdb    *redis.Client
 }
 
-func NewCachedGitHubClient(client *github.Client, rdb *redis.Client) *CachedGitHubClient {
+func NewCachedGitHubClient(client GitHubAPI, rdb *redis.Client) *CachedGitHubClient {
 	return &CachedGitHubClient{client: client, rdb: rdb}
 }
 

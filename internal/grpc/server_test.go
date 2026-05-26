@@ -6,8 +6,10 @@ import (
 	"time"
 
 	"github-release-notifier/internal/domain"
+	"github-release-notifier/internal/email"
 	pb "github-release-notifier/internal/grpc/proto"
 	"github-release-notifier/internal/service"
+	"github-release-notifier/internal/urls"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -63,10 +65,7 @@ func (m *mockGitHub) GetLatestRelease(_ context.Context, _, _ string) (*domain.R
 
 type mockEmail struct{}
 
-func (m *mockEmail) SendConfirmation(_ context.Context, _, _, _ string) error { return nil }
-func (m *mockEmail) SendReleaseNotification(_ context.Context, _, _, _, _, _ string) error {
-	return nil
-}
+func (m *mockEmail) Send(_ context.Context, _ email.Message) error { return nil }
 
 func newTestServer(opts ...func(*mockGitHub)) *Server {
 	gh := &mockGitHub{}
@@ -78,7 +77,7 @@ func newTestServer(opts ...func(*mockGitHub)) *Server {
 		&mockRepoRepo{},
 		gh,
 		&mockEmail{},
-		"http://localhost:8080",
+		urls.Builder{BaseURL: "http://localhost:8080"},
 	)
 	return NewServer(svc)
 }

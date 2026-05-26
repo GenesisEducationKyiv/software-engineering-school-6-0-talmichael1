@@ -11,6 +11,7 @@ import (
 
 	"github-release-notifier/internal/domain"
 	"github-release-notifier/internal/service"
+	"github-release-notifier/internal/urls"
 )
 
 func init() {
@@ -23,7 +24,7 @@ func TestSubscribeHandler_Success(t *testing.T) {
 		&mockRepoRepoHandler{},
 		&mockGitHubHandler{},
 		&mockEmailHandler{},
-		"http://localhost:8080",
+		urls.Builder{BaseURL: "http://localhost:8080"},
 	)
 
 	router := gin.New()
@@ -50,7 +51,7 @@ func TestSubscribeHandler_InvalidBody(t *testing.T) {
 		&mockRepoRepoHandler{},
 		&mockGitHubHandler{},
 		&mockEmailHandler{},
-		"http://localhost:8080",
+		urls.Builder{BaseURL: "http://localhost:8080"},
 	)
 
 	router := gin.New()
@@ -73,7 +74,7 @@ func TestSubscribeHandler_RepoNotFound(t *testing.T) {
 		&mockRepoRepoHandler{},
 		&mockGitHubHandler{repoErr: domain.ErrNotFound},
 		&mockEmailHandler{},
-		"http://localhost:8080",
+		urls.Builder{BaseURL: "http://localhost:8080"},
 	)
 
 	router := gin.New()
@@ -100,7 +101,7 @@ func TestSubscribeHandler_Conflict(t *testing.T) {
 		&mockRepoRepoHandler{},
 		&mockGitHubHandler{},
 		&mockEmailHandler{},
-		"http://localhost:8080",
+		urls.Builder{BaseURL: "http://localhost:8080"},
 	)
 
 	router := gin.New()
@@ -127,7 +128,7 @@ func TestConfirmHandler_Success(t *testing.T) {
 		&mockRepoRepoHandler{},
 		&mockGitHubHandler{},
 		&mockEmailHandler{},
-		"http://localhost:8080",
+		urls.Builder{BaseURL: "http://localhost:8080"},
 	)
 
 	router := gin.New()
@@ -149,7 +150,7 @@ func TestConfirmHandler_NotFound(t *testing.T) {
 		&mockRepoRepoHandler{},
 		&mockGitHubHandler{},
 		&mockEmailHandler{},
-		"http://localhost:8080",
+		urls.Builder{BaseURL: "http://localhost:8080"},
 	)
 
 	router := gin.New()
@@ -171,7 +172,7 @@ func TestUnsubscribeHandler_Success(t *testing.T) {
 		&mockRepoRepoHandler{},
 		&mockGitHubHandler{},
 		&mockEmailHandler{},
-		"http://localhost:8080",
+		urls.Builder{BaseURL: "http://localhost:8080"},
 	)
 
 	router := gin.New()
@@ -193,7 +194,7 @@ func TestSubscriptionsHandler_MissingEmail(t *testing.T) {
 		&mockRepoRepoHandler{},
 		&mockGitHubHandler{},
 		&mockEmailHandler{},
-		"http://localhost:8080",
+		urls.Builder{BaseURL: "http://localhost:8080"},
 	)
 
 	router := gin.New()
@@ -219,7 +220,7 @@ func TestSubscriptionsHandler_Success(t *testing.T) {
 		&mockRepoRepoHandler{},
 		&mockGitHubHandler{},
 		&mockEmailHandler{},
-		"http://localhost:8080",
+		urls.Builder{BaseURL: "http://localhost:8080"},
 	)
 
 	router := gin.New()

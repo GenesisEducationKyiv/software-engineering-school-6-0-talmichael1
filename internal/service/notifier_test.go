@@ -8,13 +8,18 @@ import (
 	"time"
 
 	"github-release-notifier/internal/domain"
+	"github-release-notifier/internal/email"
+	"github-release-notifier/internal/urls"
 )
 
 type mockJobQueue struct {
-	mu       sync.Mutex
-	jobs     []*domain.NotificationJob
-	sent     map[string]bool
-	requeued []domain.NotificationJob
+	mu            sync.Mutex
+	jobs          []*domain.NotificationJob
+	sent          map[string]bool
+	requeued      []domain.NotificationJob
+	acked         []domain.NotificationJob
+	reclaimCalled int
+	isSentErr     error
 }
 
 func newMockJobQueue(jobs ...*domain.NotificationJob) *mockJobQueue {
@@ -35,9 +40,26 @@ func (m *mockJobQueue) Dequeue(ctx context.Context, timeout time.Duration) (*dom
 	return job, nil
 }
 
+func (m *mockJobQueue) Ack(ctx context.Context, job domain.NotificationJob) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.acked = append(m.acked, job)
+	return nil
+}
+
+func (m *mockJobQueue) Reclaim(ctx context.Context) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.reclaimCalled++
+	return 0, nil
+}
+
 func (m *mockJobQueue) IsSent(ctx context.Context, subscriptionID int64, tag string) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.isSentErr != nil {
+		return false, m.isSentErr
+	}
 	key := fmt.Sprintf("%d:%s", subscriptionID, tag)
 	return m.sent[key], nil
 }
@@ -61,14 +83,14 @@ func (m *mockJobQueue) Requeue(ctx context.Context, job domain.NotificationJob) 
 func TestNotifier_ProcessJob_SendsEmail(t *testing.T) {
 	var sentTo string
 	releaseSender := &releaseEmailMock{
-		sendFn: func(ctx context.Context, to, repo, tag, releaseURL, unsubURL string) error {
-			sentTo = to
+		sendFn: func(ctx context.Context, msg email.Message) error {
+			sentTo = msg.To
 			return nil
 		},
 	}
 
 	q := newMockJobQueue()
-	notifier := NewNotifier(q, releaseSender, "http://localhost:8080", 1)
+	notifier := NewNotifier(q, releaseSender, urls.Builder{BaseURL: "http://localhost:8080"}, 1)
 
 	job := &domain.NotificationJob{
 		SubscriptionID: 1,
@@ -88,19 +110,96 @@ func TestNotifier_ProcessJob_SendsEmail(t *testing.T) {
 	}
 }
 
+func TestNotifier_ProcessJob_AcksAfterSend(t *testing.T) {
+	q := newMockJobQueue()
+	notifier := NewNotifier(q, &releaseEmailMock{}, urls.Builder{BaseURL: "http://localhost:8080"}, 1)
+
+	job := &domain.NotificationJob{SubscriptionID: 1, Email: "user@example.com", Repo: "golang/go", Tag: "go1.22.0", UnsubToken: "t"}
+	if err := notifier.processJob(context.Background(), job); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(q.acked) != 1 || q.acked[0].SubscriptionID != 1 {
+		t.Fatalf("expected job acked after successful send, acked=%+v", q.acked)
+	}
+}
+
+func TestNotifier_ProcessJob_AcksDuplicate(t *testing.T) {
+	q := newMockJobQueue()
+	q.sent["1:go1.22.0"] = true
+	notifier := NewNotifier(q, &releaseEmailMock{}, urls.Builder{BaseURL: "http://localhost:8080"}, 1)
+
+	job := &domain.NotificationJob{SubscriptionID: 1, Email: "user@example.com", Repo: "golang/go", Tag: "go1.22.0", UnsubToken: "t"}
+	if err := notifier.processJob(context.Background(), job); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(q.acked) != 1 {
+		t.Fatalf("expected duplicate to be acked (removed from processing), acked=%+v", q.acked)
+	}
+}
+
+func TestNotifier_ProcessJob_AcksAfterMaxRetries(t *testing.T) {
+	q := newMockJobQueue()
+	failing := &releaseEmailMock{sendFn: func(ctx context.Context, msg email.Message) error {
+		return fmt.Errorf("SMTP error")
+	}}
+	notifier := NewNotifier(q, failing, urls.Builder{BaseURL: "http://localhost:8080"}, 1)
+
+	job := &domain.NotificationJob{SubscriptionID: 1, Email: "user@example.com", Repo: "golang/go", Tag: "go1.22.0", UnsubToken: "t", Attempt: maxRetries}
+	if err := notifier.processJob(context.Background(), job); err == nil {
+		t.Fatal("expected error after max retries")
+	}
+
+	if len(q.acked) != 1 {
+		t.Fatalf("expected dropped job to be acked, acked=%+v", q.acked)
+	}
+	if len(q.requeued) != 0 {
+		t.Fatalf("expected no requeue after max retries, got %d", len(q.requeued))
+	}
+}
+
+func TestNotifier_ProcessJob_NoAckWhenDedupCheckFails(t *testing.T) {
+	q := newMockJobQueue()
+	q.isSentErr = fmt.Errorf("redis unavailable")
+	notifier := NewNotifier(q, &releaseEmailMock{}, urls.Builder{BaseURL: "http://localhost:8080"}, 1)
+
+	job := &domain.NotificationJob{SubscriptionID: 1, Email: "user@example.com", Repo: "golang/go", Tag: "go1.22.0", UnsubToken: "t"}
+	if err := notifier.processJob(context.Background(), job); err == nil {
+		t.Fatal("expected error when dedup check fails")
+	}
+
+	if len(q.acked) != 0 {
+		t.Fatalf("must not ack when outcome is unknown — job stays for recovery, acked=%+v", q.acked)
+	}
+}
+
+func TestNotifier_Run_ReclaimsOnStartup(t *testing.T) {
+	q := newMockJobQueue()
+	notifier := NewNotifier(q, &releaseEmailMock{}, urls.Builder{BaseURL: "http://localhost:8080"}, 2)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	notifier.Run(ctx)
+
+	if q.reclaimCalled < 1 {
+		t.Fatalf("expected reaper to reclaim at least once on startup, got %d", q.reclaimCalled)
+	}
+}
+
 func TestNotifier_ProcessJob_Dedup(t *testing.T) {
 	q := newMockJobQueue()
 	// Pre-mark as sent.
 	q.sent["1:go1.22.0"] = true
 
 	releaseSender := &releaseEmailMock{
-		sendFn: func(ctx context.Context, to, repo, tag, releaseURL, unsubURL string) error {
+		sendFn: func(ctx context.Context, msg email.Message) error {
 			t.Fatal("should not send duplicate notification")
 			return nil
 		},
 	}
 
-	notifier := NewNotifier(q, releaseSender, "http://localhost:8080", 1)
+	notifier := NewNotifier(q, releaseSender, urls.Builder{BaseURL: "http://localhost:8080"}, 1)
 
 	job := &domain.NotificationJob{
 		SubscriptionID: 1,
@@ -119,12 +218,12 @@ func TestNotifier_ProcessJob_Dedup(t *testing.T) {
 func TestNotifier_ProcessJob_RetryOnFailure(t *testing.T) {
 	q := newMockJobQueue()
 	releaseSender := &releaseEmailMock{
-		sendFn: func(ctx context.Context, to, repo, tag, releaseURL, unsubURL string) error {
+		sendFn: func(ctx context.Context, msg email.Message) error {
 			return fmt.Errorf("SMTP error")
 		},
 	}
 
-	notifier := NewNotifier(q, releaseSender, "http://localhost:8080", 1)
+	notifier := NewNotifier(q, releaseSender, urls.Builder{BaseURL: "http://localhost:8080"}, 1)
 
 	job := &domain.NotificationJob{
 		SubscriptionID: 1,
@@ -153,12 +252,12 @@ func TestNotifier_ProcessJob_RetryOnFailure(t *testing.T) {
 func TestNotifier_ProcessJob_MaxRetries(t *testing.T) {
 	q := newMockJobQueue()
 	releaseSender := &releaseEmailMock{
-		sendFn: func(ctx context.Context, to, repo, tag, releaseURL, unsubURL string) error {
+		sendFn: func(ctx context.Context, msg email.Message) error {
 			return fmt.Errorf("SMTP error")
 		},
 	}
 
-	notifier := NewNotifier(q, releaseSender, "http://localhost:8080", 1)
+	notifier := NewNotifier(q, releaseSender, urls.Builder{BaseURL: "http://localhost:8080"}, 1)
 
 	job := &domain.NotificationJob{
 		SubscriptionID: 1,
@@ -185,13 +284,13 @@ func TestNotifier_ProcessJob_MarkSentError(t *testing.T) {
 
 	var sent bool
 	releaseSender := &releaseEmailMock{
-		sendFn: func(ctx context.Context, to, repo, tag, releaseURL, unsubURL string) error {
+		sendFn: func(ctx context.Context, msg email.Message) error {
 			sent = true
 			return nil
 		},
 	}
 
-	notifier := NewNotifier(q, releaseSender, "http://localhost:8080", 1)
+	notifier := NewNotifier(q, releaseSender, urls.Builder{BaseURL: "http://localhost:8080"}, 1)
 
 	job := &domain.NotificationJob{
 		SubscriptionID: 1,
@@ -214,13 +313,13 @@ func TestNotifier_ProcessJob_MarkSentError(t *testing.T) {
 
 func TestNotifier_ProcessJob_DedupError(t *testing.T) {
 	releaseSender := &releaseEmailMock{
-		sendFn: func(ctx context.Context, to, repo, tag, releaseURL, unsubURL string) error {
+		sendFn: func(ctx context.Context, msg email.Message) error {
 			t.Fatal("should not send when dedup check fails")
 			return nil
 		},
 	}
 
-	notifier := NewNotifier(&errIsSentQueue{err: fmt.Errorf("redis unavailable")}, releaseSender, "http://localhost:8080", 1)
+	notifier := NewNotifier(&errIsSentQueue{err: fmt.Errorf("redis unavailable")}, releaseSender, urls.Builder{BaseURL: "http://localhost:8080"}, 1)
 
 	job := &domain.NotificationJob{
 		SubscriptionID: 1,
@@ -244,6 +343,8 @@ type errIsSentQueue struct {
 func (m *errIsSentQueue) Dequeue(ctx context.Context, timeout time.Duration) (*domain.NotificationJob, error) {
 	return nil, nil
 }
+func (m *errIsSentQueue) Ack(ctx context.Context, job domain.NotificationJob) error { return nil }
+func (m *errIsSentQueue) Reclaim(ctx context.Context) (int, error)                  { return 0, nil }
 func (m *errIsSentQueue) IsSent(ctx context.Context, subscriptionID int64, tag string) (bool, error) {
 	return false, m.err
 }
@@ -262,6 +363,8 @@ type errMarkSentQueue struct {
 func (m *errMarkSentQueue) Dequeue(ctx context.Context, timeout time.Duration) (*domain.NotificationJob, error) {
 	return nil, nil
 }
+func (m *errMarkSentQueue) Ack(ctx context.Context, job domain.NotificationJob) error { return nil }
+func (m *errMarkSentQueue) Reclaim(ctx context.Context) (int, error)                  { return 0, nil }
 func (m *errMarkSentQueue) IsSent(ctx context.Context, subscriptionID int64, tag string) (bool, error) {
 	return false, nil
 }
@@ -272,17 +375,14 @@ func (m *errMarkSentQueue) Requeue(ctx context.Context, job domain.NotificationJ
 	return nil
 }
 
-// releaseEmailMock implements EmailSender for notification-specific tests.
+// releaseEmailMock implements email.Sender for notification-specific tests.
 type releaseEmailMock struct {
-	sendFn func(ctx context.Context, to, repo, tag, releaseURL, unsubURL string) error
+	sendFn func(ctx context.Context, msg email.Message) error
 }
 
-func (m *releaseEmailMock) SendConfirmation(ctx context.Context, to, repo, confirmURL string) error {
-	return nil
-}
-func (m *releaseEmailMock) SendReleaseNotification(ctx context.Context, to, repo, tag, releaseURL, unsubURL string) error {
+func (m *releaseEmailMock) Send(ctx context.Context, msg email.Message) error {
 	if m.sendFn != nil {
-		return m.sendFn(ctx, to, repo, tag, releaseURL, unsubURL)
+		return m.sendFn(ctx, msg)
 	}
 	return nil
 }

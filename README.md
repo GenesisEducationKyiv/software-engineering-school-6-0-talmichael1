@@ -15,8 +15,8 @@ A Go service that allows users to subscribe to email notifications about new rel
 The application is a monolith with three logical components running within a single process:
 
 - **API** — HTTP (Gin) and gRPC servers handling subscription management
-- **Scanner** — Background worker pool that periodically polls GitHub for new releases in parallel
-- **Notifier** — Worker pool that consumes a Redis queue and sends emails
+- **Scanner** — A leader instance (Redis lock) enqueues due repositories each interval; a worker pool on any instance drains that queue and polls GitHub. Stateless and safe to run as multiple replicas
+- **Notifier** — Worker pool that consumes a reliable Redis queue and sends emails (at-least-once, see below)
 
 ### Why no API rate limiting?
 
@@ -30,12 +30,12 @@ Redis lists provide O(1) push/pop with automatic memory reclaim. LPUSH/BRPOP is 
 
 ### How the scan → notify pipeline works
 
-1. The scanner fetches all repositories that have at least one **confirmed** subscriber (a single SQL JOIN — repos with zero confirmed subs are never checked)
-2. Repositories are distributed across a configurable worker pool (`SCAN_WORKERS`, default 5) via a channel — each repo is checked by exactly one worker, and all external clients (`go-redis`, `sqlx.DB`) are concurrency-safe
+1. Once per `SCAN_INTERVAL`, a single **leader** instance (claimed via Redis `SET NX EX`) fetches all repositories with at least one **confirmed** subscriber (a single SQL JOIN) and pushes each onto a `repocheck` Redis queue. Non-leader instances skip the tick — no duplicate enqueues or races on the tag update
+2. Worker pools across all instances drain `repocheck` (`SCAN_WORKERS`, default 5) — scan work is distributed, and any replica is interchangeable. The queue is lossy by design: a dropped repo is simply re-checked next cycle
 3. Each worker calls `GetLatestRelease` via the cached GitHub client (Redis, 10min TTL). 10,000 subscribers to `golang/go` = **1 GitHub API call**, not 10,000
 4. If `release.TagName != repo.LastSeenTag`, it builds a `NotificationJob` per subscriber and enqueues them all to Redis in a single pipeline (`LPUSH`)
 5. `last_seen_tag` in PostgreSQL is updated **only after** successful enqueue — this guarantees at-least-once delivery. If the process crashes between enqueue and tag update, the next scan re-detects the release
-6. Notifier workers (`BRPOP`) use a two-phase deduplication strategy: **check** (`EXISTS`) before sending to skip known duplicates, then **mark** (`SET` with TTL) after successful delivery. This prevents both lost notifications (mark-before-send) and duplicate emails (mark-after-send covers 99.9% of cases)
+6. Notifier workers use a **reliable queue**: `Dequeue` atomically moves a job into a `processing` sorted set stamped with a visibility deadline (Lua `RPOP`+`ZADD`), so a crash mid-send can't lose it. After a two-phase dedup (**check** `EXISTS` before sending, **mark** `SET` with TTL after), the job is `Ack`ed (`ZREM`). A reaper moves jobs whose deadline passed back to `pending`, recovering work orphaned by dead workers — across instances, with no startup dependency (see ADR-0004)
 
 ### Why seed `last_seen_tag` on subscribe?
 
@@ -181,7 +181,8 @@ All configuration is done via environment variables:
 │   ├── github/          # GitHub API client with rate limit handling
 │   ├── cache/           # Redis caching layer for GitHub responses
 │   ├── email/           # Mailgun sender + console backend
-│   ├── queue/           # Redis-backed notification queue with deduplication
+│   ├── queue/           # Redis reliable notification queue + repo-check queue
+│   ├── lock/            # Redis leader lock (scanner singleton election)
 │   ├── grpc/            # gRPC server and protobuf definitions
 │   └── tracing/         # OpenTelemetry setup
 ├── migrations/          # PostgreSQL schema migrations (embedded at compile time)
@@ -206,8 +207,10 @@ DATABASE_URL="postgres://user:pass@localhost:5432/test_db?sslmode=disable" \
 ### Unit Tests
 
 - **Subscription service** — validation, subscribe/confirm/unsubscribe flows, email failure rollback, rate limit propagation, tag seeding
-- **Scanner** — new release detection, no change, no releases, GitHub errors, context cancellation, enqueue errors, tag update errors, subscriber listing errors
-- **Notifier** — job processing, two-phase deduplication, retry logic, max retries, dedup check errors, mark-sent errors
+- **Scanner** — leader-gated enqueue (and skip when not leader), worker repo dispatch, new release detection, no change, no releases, GitHub errors, context cancellation, enqueue errors, tag update errors, subscriber listing errors
+- **Notifier** — job processing, two-phase deduplication, retry logic, max retries, ack on terminal states, no-ack when outcome unknown, reaper reclaim on startup, dedup check errors, mark-sent errors
+- **Leader lock** — acquire, contention while held, re-acquire after expiry
+- **Reliable queue** — move-to-processing on dequeue, ack removal, requeue, reaper reclaims expired and leaves live in-flight jobs
 - **Cleanup** — stale subscription deletion, error handling
 - **GitHub client** — rate limit header parsing, 429 retry, auth header, response decoding
 - **Cached GitHub client** (Redis) — cache hits/misses, TTL behavior, caching of 200/404, no caching for 429/transient errors, key separation
