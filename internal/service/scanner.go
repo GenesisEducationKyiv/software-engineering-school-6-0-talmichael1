@@ -118,6 +118,7 @@ func (s *Scanner) worker(ctx context.Context) {
 				return
 			}
 			slog.ErrorContext(ctx, "scanner: dequeue repo", "error", err)
+			metrics.ScannerErrors.WithLabelValues("dequeue").Inc()
 			continue
 		}
 		if repo == nil {
@@ -125,6 +126,7 @@ func (s *Scanner) worker(ctx context.Context) {
 		}
 		if err := s.checkRepo(ctx, *repo); err != nil {
 			slog.ErrorContext(ctx, "scanner: checking repo", "repo", repo.FullName(), "error", err)
+			metrics.ScannerErrors.WithLabelValues("check_repo").Inc()
 		}
 	}
 }
@@ -151,6 +153,7 @@ func (s *Scanner) enqueueDueRepos(ctx context.Context) {
 	repos, err := s.repoRepo.ListWithActiveSubscriptions(ctx)
 	if err != nil {
 		slog.ErrorContext(ctx, "scanner: listing repos", "error", err)
+		metrics.ScannerErrors.WithLabelValues("list_repos").Inc()
 		return
 	}
 	slog.InfoContext(ctx, "scanner: enqueueing repositories", "count", len(repos))
@@ -161,6 +164,7 @@ func (s *Scanner) enqueueDueRepos(ctx context.Context) {
 		}
 		if err := s.repoChecks.EnqueueRepo(ctx, repo); err != nil {
 			slog.ErrorContext(ctx, "scanner: enqueueing repo", "repo", repo.FullName(), "error", err)
+			metrics.ScannerErrors.WithLabelValues("enqueue").Inc()
 		}
 	}
 }

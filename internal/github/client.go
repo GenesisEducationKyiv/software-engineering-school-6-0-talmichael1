@@ -11,8 +11,15 @@ import (
 	"sync"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+
 	"github-release-notifier/internal/domain"
 	"github-release-notifier/internal/metrics"
+)
+
+const (
+	opRepoExists       = "repo_exists"
+	opGetLatestRelease = "get_latest_release"
 )
 
 const baseURL = "https://api.github.com"
@@ -37,14 +44,14 @@ func NewClient(token string) *Client {
 // RepoExists returns domain.ErrNotFound for a missing repo or domain.ErrRateLimited on 429.
 func (c *Client) RepoExists(ctx context.Context, owner, repo string) error {
 	url := fmt.Sprintf("%s/repos/%s/%s", baseURL, owner, repo)
-	_, err := c.doGet(ctx, url)
+	_, err := c.doGet(ctx, opRepoExists, url)
 	return err
 }
 
 // GetLatestRelease returns domain.ErrNotFound if the repo has no releases.
 func (c *Client) GetLatestRelease(ctx context.Context, owner, repo string) (*domain.Release, error) {
 	url := fmt.Sprintf("%s/repos/%s/%s/releases/latest", baseURL, owner, repo)
-	body, err := c.doGet(ctx, url)
+	body, err := c.doGet(ctx, opGetLatestRelease, url)
 	if err != nil {
 		return nil, err
 	}
@@ -56,7 +63,10 @@ func (c *Client) GetLatestRelease(ctx context.Context, owner, repo string) (*dom
 	return &release, nil
 }
 
-func (c *Client) doGet(ctx context.Context, url string) ([]byte, error) {
+func (c *Client) doGet(ctx context.Context, operation, url string) ([]byte, error) {
+	timer := prometheus.NewTimer(metrics.GitHubClientDuration.WithLabelValues(operation))
+	defer timer.ObserveDuration()
+
 	c.waitForRateLimit()
 
 	var lastErr error
@@ -76,7 +86,7 @@ func (c *Client) doGet(ctx context.Context, url string) ([]byte, error) {
 		}
 
 		c.updateRateLimit(resp)
-		metrics.GitHubAPIRequests.WithLabelValues(strconv.Itoa(resp.StatusCode)).Inc()
+		metrics.GitHubClientRequests.WithLabelValues(operation, strconv.Itoa(resp.StatusCode)).Inc()
 		body, readErr := io.ReadAll(resp.Body)
 		_ = resp.Body.Close()
 		if readErr != nil {
