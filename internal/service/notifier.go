@@ -7,6 +7,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+
 	"github-release-notifier/internal/domain"
 	"github-release-notifier/internal/email"
 	"github-release-notifier/internal/metrics"
@@ -121,6 +123,9 @@ func (n *Notifier) worker(ctx context.Context, id int) {
 }
 
 func (n *Notifier) processJob(ctx context.Context, job *domain.NotificationJob) error {
+	timer := prometheus.NewTimer(metrics.NotifierJobDuration)
+	defer timer.ObserveDuration()
+
 	sent, err := n.queue.IsSent(ctx, job.SubscriptionID, job.Tag)
 	if err != nil {
 		return fmt.Errorf("checking dedup: %w", err)
@@ -130,6 +135,7 @@ func (n *Notifier) processJob(ctx context.Context, job *domain.NotificationJob) 
 			"subscription_id", job.SubscriptionID,
 			"tag", job.Tag)
 		n.ack(ctx, job)
+		metrics.NotifierJobsProcessed.WithLabelValues("duplicate").Inc()
 		return nil
 	}
 
@@ -143,9 +149,10 @@ func (n *Notifier) processJob(ctx context.Context, job *domain.NotificationJob) 
 				"email", job.Email,
 				"attempt", job.Attempt+1,
 				"error", err)
+			metrics.NotifierJobsProcessed.WithLabelValues("retried").Inc()
 			return n.queue.Requeue(ctx, *job)
 		}
-		metrics.NotificationsFailed.Inc()
+		metrics.NotifierJobsProcessed.WithLabelValues("failed").Inc()
 		n.ack(ctx, job)
 		return fmt.Errorf("max retries exceeded for %s: %w", job.Email, err)
 	}
@@ -157,7 +164,7 @@ func (n *Notifier) processJob(ctx context.Context, job *domain.NotificationJob) 
 			"error", err)
 	}
 	n.ack(ctx, job)
-	metrics.NotificationsSent.Inc()
+	metrics.NotifierJobsProcessed.WithLabelValues("sent").Inc()
 
 	slog.InfoContext(ctx, "notification sent",
 		"email", job.Email,
