@@ -18,7 +18,7 @@ type errorMessages map[error]string
 func respondError(c *gin.Context, err error, msgs errorMessages) {
 	status, msg := classifyError(err, msgs)
 	if status == http.StatusInternalServerError {
-		slog.Error("handler error", "path", c.FullPath(), "error", err)
+		slog.ErrorContext(c.Request.Context(), "handler error", "path", c.FullPath(), "error", err)
 	}
 	c.JSON(status, gin.H{"error": msg})
 }

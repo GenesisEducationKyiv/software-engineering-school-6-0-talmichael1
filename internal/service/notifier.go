@@ -46,7 +46,7 @@ func NewNotifier(queue JobDequeuer, sender email.Sender, urlBuilder urls.Builder
 }
 
 func (n *Notifier) Run(ctx context.Context) {
-	slog.Info("notifier started", "workers", n.numWorkers)
+	slog.InfoContext(ctx, "notifier started", "workers", n.numWorkers)
 	var wg sync.WaitGroup
 
 	for i := 0; i < n.numWorkers; i++ {
@@ -64,7 +64,7 @@ func (n *Notifier) Run(ctx context.Context) {
 	}()
 
 	wg.Wait()
-	slog.Info("notifier stopped")
+	slog.InfoContext(ctx, "notifier stopped")
 }
 
 func (n *Notifier) reaper(ctx context.Context) {
@@ -84,11 +84,11 @@ func (n *Notifier) reaper(ctx context.Context) {
 func (n *Notifier) reclaim(ctx context.Context) {
 	reclaimed, err := n.queue.Reclaim(ctx)
 	if err != nil {
-		slog.Error("notifier: reclaiming expired jobs", "error", err)
+		slog.ErrorContext(ctx, "notifier: reclaiming expired jobs", "error", err)
 		return
 	}
 	if reclaimed > 0 {
-		slog.Warn("notifier: reclaimed expired in-flight jobs", "count", reclaimed)
+		slog.WarnContext(ctx, "notifier: reclaimed expired in-flight jobs", "count", reclaimed)
 	}
 }
 
@@ -103,7 +103,7 @@ func (n *Notifier) worker(ctx context.Context, id int) {
 			if ctx.Err() != nil {
 				return
 			}
-			slog.Error("notifier: dequeue error", "worker", id, "error", err)
+			slog.ErrorContext(ctx, "notifier: dequeue error", "worker", id, "error", err)
 			continue
 		}
 		if job == nil {
@@ -111,7 +111,7 @@ func (n *Notifier) worker(ctx context.Context, id int) {
 		}
 
 		if err := n.processJob(ctx, job); err != nil {
-			slog.Error("notifier: processing job",
+			slog.ErrorContext(ctx, "notifier: processing job",
 				"worker", id,
 				"email", job.Email,
 				"repo", job.Repo,
@@ -126,7 +126,7 @@ func (n *Notifier) processJob(ctx context.Context, job *domain.NotificationJob) 
 		return fmt.Errorf("checking dedup: %w", err)
 	}
 	if sent {
-		slog.Debug("duplicate notification skipped",
+		slog.DebugContext(ctx, "duplicate notification skipped",
 			"subscription_id", job.SubscriptionID,
 			"tag", job.Tag)
 		n.ack(ctx, job)
@@ -139,7 +139,7 @@ func (n *Notifier) processJob(ctx context.Context, job *domain.NotificationJob) 
 	err = n.email.Send(ctx, msg)
 	if err != nil {
 		if job.Attempt < maxRetries {
-			slog.Warn("notification send failed, requeuing",
+			slog.WarnContext(ctx, "notification send failed, requeuing",
 				"email", job.Email,
 				"attempt", job.Attempt+1,
 				"error", err)
@@ -151,7 +151,7 @@ func (n *Notifier) processJob(ctx context.Context, job *domain.NotificationJob) 
 	}
 
 	if err := n.queue.MarkSent(ctx, job.SubscriptionID, job.Tag); err != nil {
-		slog.Error("failed to mark notification as sent (email was delivered)",
+		slog.ErrorContext(ctx, "failed to mark notification as sent (email was delivered)",
 			"subscription_id", job.SubscriptionID,
 			"tag", job.Tag,
 			"error", err)
@@ -159,7 +159,7 @@ func (n *Notifier) processJob(ctx context.Context, job *domain.NotificationJob) 
 	n.ack(ctx, job)
 	metrics.NotificationsSent.Inc()
 
-	slog.Info("notification sent",
+	slog.InfoContext(ctx, "notification sent",
 		"email", job.Email,
 		"repo", job.Repo,
 		"tag", job.Tag)
@@ -168,7 +168,7 @@ func (n *Notifier) processJob(ctx context.Context, job *domain.NotificationJob) 
 
 func (n *Notifier) ack(ctx context.Context, job *domain.NotificationJob) {
 	if err := n.queue.Ack(ctx, *job); err != nil {
-		slog.Error("notifier: ack failed",
+		slog.ErrorContext(ctx, "notifier: ack failed",
 			"subscription_id", job.SubscriptionID,
 			"tag", job.Tag,
 			"error", err)

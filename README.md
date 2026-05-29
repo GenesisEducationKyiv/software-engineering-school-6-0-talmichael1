@@ -81,6 +81,13 @@ Without a `GITHUB_TOKEN`, the limit is 60 requests/hour. With a token (any GitHu
 | CI | GitHub Actions |
 | Hosting | Heroku (API) + Cloudflare Pages (frontend) |
 
+## Observability
+
+The default `docker compose up` brings up the full observability stack alongside the app:
+
+- **Kibana**: http://localhost:5601 — create a data view for `app-logs-*` to query application logs. Each entry carries `trace_id`/`span_id` when emitted inside an OTel span, so you can pivot to Jaeger (http://localhost:16686) by trace ID.
+- **Elasticsearch**: http://localhost:9200
+
 ## Quick Start
 
 ### Prerequisites
@@ -236,6 +243,7 @@ End-to-end tests hitting a real PostgreSQL database:
 | Prometheus metrics | `/metrics` endpoint with request counts, latencies, notification counters |
 | GitHub Actions CI | Lint (golangci-lint v2) → unit tests → integration tests → Docker build |
 | OpenTelemetry + Jaeger | Distributed tracing (Docker only, not on Heroku) |
+| Structured logging + ELK | slog JSON with trace_id/span_id correlation; Filebeat ships container logs to Elasticsearch, queryable in Kibana |
 | Console email backend | Emails logged to stdout when Mailgun not configured |
 | Subscription cleanup | Background worker removes unconfirmed subs older than 1 hour |
 

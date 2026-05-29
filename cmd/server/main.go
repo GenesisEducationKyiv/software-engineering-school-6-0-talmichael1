@@ -33,6 +33,7 @@ import (
 	pb "github-release-notifier/internal/grpc/proto"
 	"github-release-notifier/internal/handler"
 	"github-release-notifier/internal/lock"
+	"github-release-notifier/internal/logging"
 	"github-release-notifier/internal/queue"
 	"github-release-notifier/internal/repository/postgres"
 	"github-release-notifier/internal/service"
@@ -130,7 +131,8 @@ func configureLogger(cfg *config.Config) {
 	if cfg.Debug {
 		level = slog.LevelDebug
 	}
-	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: level})))
+	base := slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: level})
+	slog.SetDefault(slog.New(logging.NewContextHandler(base)))
 }
 
 func connectDB(dsn string) (*sqlx.DB, error) {
