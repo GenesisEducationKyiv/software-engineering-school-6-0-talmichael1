@@ -24,7 +24,7 @@ func NewCleanup(subs unconfirmedDeleter) *Cleanup {
 }
 
 func (c *Cleanup) Run(ctx context.Context) {
-	slog.Info("cleanup worker started",
+	slog.InfoContext(ctx, "cleanup worker started",
 		"interval", cleanupInterval,
 		"max_age", maxUnconfirmedAge)
 
@@ -34,7 +34,7 @@ func (c *Cleanup) Run(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
-			slog.Info("cleanup worker stopped")
+			slog.InfoContext(ctx, "cleanup worker stopped")
 			return
 		case <-ticker.C:
 			c.run(ctx)
@@ -45,10 +45,10 @@ func (c *Cleanup) Run(ctx context.Context) {
 func (c *Cleanup) run(ctx context.Context) {
 	deleted, err := c.subRepo.DeleteUnconfirmedOlderThan(ctx, maxUnconfirmedAge)
 	if err != nil {
-		slog.Error("cleanup: deleting stale subscriptions", "error", err)
+		slog.ErrorContext(ctx, "cleanup: deleting stale subscriptions", "error", err)
 		return
 	}
 	if deleted > 0 {
-		slog.Info("cleanup: removed stale unconfirmed subscriptions", "count", deleted)
+		slog.InfoContext(ctx, "cleanup: removed stale unconfirmed subscriptions", "count", deleted)
 	}
 }

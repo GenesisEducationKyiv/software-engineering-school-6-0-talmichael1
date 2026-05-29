@@ -80,7 +80,7 @@ func NewScanner(
 }
 
 func (s *Scanner) Run(ctx context.Context) {
-	slog.Info("scanner started", "interval", s.interval, "workers", s.workers)
+	slog.InfoContext(ctx, "scanner started", "interval", s.interval, "workers", s.workers)
 
 	var wg sync.WaitGroup
 	for range s.workers {
@@ -98,7 +98,7 @@ func (s *Scanner) Run(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
-			slog.Info("scanner stopped")
+			slog.InfoContext(ctx, "scanner stopped")
 			wg.Wait()
 			return
 		case <-ticker.C:
@@ -117,14 +117,14 @@ func (s *Scanner) worker(ctx context.Context) {
 			if ctx.Err() != nil {
 				return
 			}
-			slog.Error("scanner: dequeue repo", "error", err)
+			slog.ErrorContext(ctx, "scanner: dequeue repo", "error", err)
 			continue
 		}
 		if repo == nil {
 			continue
 		}
 		if err := s.checkRepo(ctx, *repo); err != nil {
-			slog.Error("scanner: checking repo", "repo", repo.FullName(), "error", err)
+			slog.ErrorContext(ctx, "scanner: checking repo", "repo", repo.FullName(), "error", err)
 		}
 	}
 }
@@ -132,11 +132,11 @@ func (s *Scanner) worker(ctx context.Context) {
 func (s *Scanner) enqueueDueRepos(ctx context.Context) {
 	acquired, err := s.lock.Acquire(ctx, scanLockKey, s.interval/2)
 	if err != nil {
-		slog.Error("scanner: acquiring leader lock", "error", err)
+		slog.ErrorContext(ctx, "scanner: acquiring leader lock", "error", err)
 		return
 	}
 	if !acquired {
-		slog.Debug("scanner: another instance is leader, skipping enqueue")
+		slog.DebugContext(ctx, "scanner: another instance is leader, skipping enqueue")
 		return
 	}
 
@@ -150,17 +150,17 @@ func (s *Scanner) enqueueDueRepos(ctx context.Context) {
 
 	repos, err := s.repoRepo.ListWithActiveSubscriptions(ctx)
 	if err != nil {
-		slog.Error("scanner: listing repos", "error", err)
+		slog.ErrorContext(ctx, "scanner: listing repos", "error", err)
 		return
 	}
-	slog.Info("scanner: enqueueing repositories", "count", len(repos))
+	slog.InfoContext(ctx, "scanner: enqueueing repositories", "count", len(repos))
 
 	for _, repo := range repos {
 		if ctx.Err() != nil {
 			return
 		}
 		if err := s.repoChecks.EnqueueRepo(ctx, repo); err != nil {
-			slog.Error("scanner: enqueueing repo", "repo", repo.FullName(), "error", err)
+			slog.ErrorContext(ctx, "scanner: enqueueing repo", "repo", repo.FullName(), "error", err)
 		}
 	}
 }
@@ -178,7 +178,7 @@ func (s *Scanner) checkRepo(ctx context.Context, repo domain.Repository) error {
 		return s.repoRepo.UpdateCheckedAt(ctx, repo.ID)
 	}
 
-	slog.Info("new release detected",
+	slog.InfoContext(ctx, "new release detected",
 		"repo", repo.FullName(),
 		"tag", release.TagName,
 		"previous", repo.LastSeenTag)
@@ -211,7 +211,7 @@ func (s *Scanner) checkRepo(ctx context.Context, repo domain.Repository) error {
 		return fmt.Errorf("updating last seen tag: %w", err)
 	}
 
-	slog.Info("notifications enqueued",
+	slog.InfoContext(ctx, "notifications enqueued",
 		"repo", repo.FullName(),
 		"tag", release.TagName,
 		"count", len(jobs))
