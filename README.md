@@ -88,6 +88,7 @@ The default `docker compose up` brings up the full observability stack alongside
 - **Kibana**: http://localhost:5601 — create a data view for `app-logs-*` to query application logs. Each entry carries `trace_id`/`span_id` when emitted inside an OTel span, so you can pivot to Jaeger (http://localhost:16686) by trace ID.
 - **Elasticsearch**: http://localhost:9200
 - **Prometheus**: http://localhost:9091 — scrapes the app's `/metrics` every 15s. RED metrics are exposed for HTTP, GitHub client, notifier jobs, and scanner stages.
+- **Grafana**: http://localhost:3001 (anonymous Viewer enabled, or admin/admin) — provisioned with the Prometheus datasource and the *GitHub Release Notifier — RED* dashboard (rate/errors/duration rows for HTTP, GitHub client, notifier, scanner, plus business KPIs).
 
 ## Quick Start
 
@@ -245,6 +246,7 @@ End-to-end tests hitting a real PostgreSQL database:
 | GitHub Actions CI | Lint (golangci-lint v2) → unit tests → integration tests → Docker build |
 | OpenTelemetry + Jaeger | Distributed tracing (Docker only, not on Heroku) |
 | Structured logging + ELK | slog JSON with trace_id/span_id correlation; Filebeat ships container logs to Elasticsearch, queryable in Kibana |
+| Grafana RED dashboard | Provisioned dashboard (rate/errors/duration) for HTTP, GitHub client, notifier, scanner + business KPIs |
 | Console email backend | Emails logged to stdout when Mailgun not configured |
 | Subscription cleanup | Background worker removes unconfirmed subs older than 1 hour |
 
