@@ -8,12 +8,17 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 
 	"github-release-notifier/internal/domain"
 	"github-release-notifier/internal/email"
 	"github-release-notifier/internal/metrics"
 	"github-release-notifier/internal/urls"
 )
+
+var notifierTracer = otel.Tracer("notifier")
 
 const (
 	maxRetries   = 5
@@ -84,6 +89,9 @@ func (n *Notifier) reaper(ctx context.Context) {
 }
 
 func (n *Notifier) reclaim(ctx context.Context) {
+	ctx, span := notifierTracer.Start(ctx, "notifier.reclaim")
+	defer span.End()
+
 	reclaimed, err := n.queue.Reclaim(ctx)
 	if err != nil {
 		slog.ErrorContext(ctx, "notifier: reclaiming expired jobs", "error", err)
@@ -123,6 +131,13 @@ func (n *Notifier) worker(ctx context.Context, id int) {
 }
 
 func (n *Notifier) processJob(ctx context.Context, job *domain.NotificationJob) error {
+	ctx, span := notifierTracer.Start(ctx, "notifier.process_job",
+		trace.WithAttributes(
+			attribute.String("repo", job.Repo),
+			attribute.String("tag", job.Tag),
+		))
+	defer span.End()
+
 	timer := prometheus.NewTimer(metrics.NotifierJobDuration)
 	defer timer.ObserveDuration()
 

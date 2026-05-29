@@ -9,10 +9,15 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 
 	"github-release-notifier/internal/domain"
 	"github-release-notifier/internal/metrics"
 )
+
+var scannerTracer = otel.Tracer("scanner")
 
 const (
 	scanLockKey        = "scanner:leader"
@@ -132,6 +137,9 @@ func (s *Scanner) worker(ctx context.Context) {
 }
 
 func (s *Scanner) enqueueDueRepos(ctx context.Context) {
+	ctx, span := scannerTracer.Start(ctx, "scanner.cycle")
+	defer span.End()
+
 	acquired, err := s.lock.Acquire(ctx, scanLockKey, s.interval/2)
 	if err != nil {
 		slog.ErrorContext(ctx, "scanner: acquiring leader lock", "error", err)
@@ -170,6 +178,10 @@ func (s *Scanner) enqueueDueRepos(ctx context.Context) {
 }
 
 func (s *Scanner) checkRepo(ctx context.Context, repo domain.Repository) error {
+	ctx, span := scannerTracer.Start(ctx, "scanner.check_repo",
+		trace.WithAttributes(attribute.String("repo", repo.FullName())))
+	defer span.End()
+
 	release, err := s.github.GetLatestRelease(ctx, repo.Owner, repo.Name)
 	if err != nil {
 		if errors.Is(err, domain.ErrNotFound) {
