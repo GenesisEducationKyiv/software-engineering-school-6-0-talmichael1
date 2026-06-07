@@ -12,4 +12,9 @@ type NotificationJob struct {
 	ReleaseURL     string `json:"release_url"`
 	UnsubToken     string `json:"unsub_token"`
 	Attempt        int    `json:"attempt"`
+
+	// W3C trace context, set by the producer so this service can continue the
+	// scanner's trace across the queue boundary (see ADR-0005).
+	Traceparent string `json:"traceparent,omitempty"`
+	Tracestate  string `json:"tracestate,omitempty"`
 }

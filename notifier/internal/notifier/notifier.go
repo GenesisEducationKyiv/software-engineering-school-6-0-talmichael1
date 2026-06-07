@@ -10,6 +10,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
 
 	"github-release-notifier/notifier/internal/domain"
@@ -131,6 +132,10 @@ func (n *Notifier) worker(ctx context.Context, id int) {
 }
 
 func (n *Notifier) processJob(ctx context.Context, job *domain.NotificationJob) error {
+	ctx = otel.GetTextMapPropagator().Extract(ctx, propagation.MapCarrier{
+		"traceparent": job.Traceparent,
+		"tracestate":  job.Tracestate,
+	})
 	ctx, span := tracer.Start(ctx, "notifier.process_job",
 		trace.WithAttributes(
 			attribute.String("repo", job.Repo),
