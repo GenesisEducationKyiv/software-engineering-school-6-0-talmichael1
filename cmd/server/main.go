@@ -82,7 +82,7 @@ func run() error {
 	}
 	defer func() { _ = rdb.Close() }()
 
-	subscriptionSvc, scanner, notifier, cleanup := buildServices(cfg, db, rdb)
+	subscriptionSvc, scanner, cleanup := buildServices(cfg, db, rdb)
 
 	router := buildRouter(cfg, subscriptionSvc)
 	httpServer := &http.Server{
@@ -98,7 +98,6 @@ func run() error {
 	defer cancel()
 
 	go scanner.Run(ctx)
-	go notifier.Run(ctx)
 	go cleanup.Run(ctx)
 
 	errCh := make(chan error, 2)
@@ -173,7 +172,7 @@ func connectRedis(rawURL string) (*redis.Client, error) {
 }
 
 func buildServices(cfg *config.Config, db *sqlx.DB, rdb *redis.Client) (
-	*service.SubscriptionService, *service.Scanner, *service.Notifier, *service.Cleanup,
+	*service.SubscriptionService, *service.Scanner, *service.Cleanup,
 ) {
 	repoStore := postgres.NewRepositoryStore(db)
 	subStore := postgres.NewSubscriptionStore(db)
@@ -197,9 +196,8 @@ func buildServices(cfg *config.Config, db *sqlx.DB, rdb *redis.Client) (
 
 	subscriptionSvc := service.NewSubscriptionService(subStore, repoStore, cachedGH, mailer, urlBuilder)
 	scanner := service.NewScanner(repoStore, subStore, cachedGH, notifQueue, repoCheckQueue, scanLock, cfg.ScanInterval, cfg.ScanWorkers)
-	notifier := service.NewNotifier(notifQueue, mailer, urlBuilder, cfg.NotificationWorkers)
 	cleanup := service.NewCleanup(subStore)
-	return subscriptionSvc, scanner, notifier, cleanup
+	return subscriptionSvc, scanner, cleanup
 }
 
 func buildRouter(cfg *config.Config, svc *service.SubscriptionService) *gin.Engine {

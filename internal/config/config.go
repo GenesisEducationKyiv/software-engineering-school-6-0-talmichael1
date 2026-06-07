@@ -22,9 +22,8 @@ type Config struct {
 	MailgunFrom    string `env:"MAILGUN_FROM" envDefault:"noreply@releases.app"`
 	MailgunAPIBase string `env:"MAILGUN_API_BASE"` // e.g. https://api.eu.mailgun.net/v3
 
-	ScanInterval        time.Duration `env:"SCAN_INTERVAL" envDefault:"5m"`
-	ScanWorkers         int           `env:"SCAN_WORKERS" envDefault:"5"`
-	NotificationWorkers int           `env:"NOTIFICATION_WORKERS" envDefault:"10"`
+	ScanInterval time.Duration `env:"SCAN_INTERVAL" envDefault:"5m"`
+	ScanWorkers  int           `env:"SCAN_WORKERS" envDefault:"5"`
 
 	APIKey string `env:"API_KEY"`
 

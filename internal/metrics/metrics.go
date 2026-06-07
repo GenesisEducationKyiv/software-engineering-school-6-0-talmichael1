@@ -33,17 +33,6 @@ var (
 		Help: "Total notifications enqueued for delivery.",
 	})
 
-	NotifierJobsProcessed = promauto.NewCounterVec(prometheus.CounterOpts{
-		Name: "notifier_jobs_processed_total",
-		Help: "Total notifier job outcomes (sent, retried, failed, duplicate).",
-	}, []string{"outcome"})
-
-	NotifierJobDuration = promauto.NewHistogram(prometheus.HistogramOpts{
-		Name:    "notifier_job_duration_seconds",
-		Help:    "Duration of notifier job processing in seconds.",
-		Buckets: prometheus.DefBuckets,
-	})
-
 	ConfirmationEmailsSent = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "confirmation_emails_sent_total",
 		Help: "Total subscription confirmation emails successfully sent.",
@@ -70,3 +59,12 @@ var (
 		Help: "Current number of confirmed subscriptions.",
 	})
 )
+
+// init seeds each scanner-error stage at zero. A CounterVec series otherwise
+// first appears already at 1, so rate() never sees the increment that created
+// it — and the dashboard panel reads "no data" instead of a flat baseline.
+func init() {
+	for _, stage := range []string{"list_repos", "enqueue", "check_repo", "dequeue"} {
+		ScannerErrors.WithLabelValues(stage)
+	}
+}
