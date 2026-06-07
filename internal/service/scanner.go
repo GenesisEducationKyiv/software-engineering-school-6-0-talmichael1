@@ -215,7 +215,6 @@ func (s *Scanner) checkRepo(ctx context.Context, repo domain.Repository) error {
 			Email:          sub.Email,
 			Repo:           repo.FullName(),
 			Tag:            release.TagName,
-			ReleaseName:    release.Name,
 			ReleaseURL:     release.HTMLURL,
 			UnsubToken:     sub.UnsubscribeToken,
 			Traceparent:    carrier["traceparent"],

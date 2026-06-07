@@ -94,7 +94,7 @@ func TestScanner_CheckRepo_NewRelease(t *testing.T) {
 	}
 	gh := &mockGitHub{
 		getLatestRelFn: func(ctx context.Context, owner, repo string) (*domain.Release, error) {
-			return &domain.Release{TagName: "go1.22.0", Name: "Go 1.22", HTMLURL: "https://example.com"}, nil
+			return &domain.Release{TagName: "go1.22.0", HTMLURL: "https://example.com"}, nil
 		},
 	}
 
@@ -193,7 +193,7 @@ func TestScanner_CheckRepo_ListSubscribersError(t *testing.T) {
 	}
 	gh := &mockGitHub{
 		getLatestRelFn: func(ctx context.Context, owner, repo string) (*domain.Release, error) {
-			return &domain.Release{TagName: "go1.22.0", Name: "Go 1.22"}, nil
+			return &domain.Release{TagName: "go1.22.0"}, nil
 		},
 	}
 
@@ -225,7 +225,7 @@ func TestScanner_CheckRepo_EnqueueError(t *testing.T) {
 	}
 	gh := &mockGitHub{
 		getLatestRelFn: func(ctx context.Context, owner, repo string) (*domain.Release, error) {
-			return &domain.Release{TagName: "go1.22.0", Name: "Go 1.22"}, nil
+			return &domain.Release{TagName: "go1.22.0"}, nil
 		},
 	}
 
@@ -255,7 +255,7 @@ func TestScanner_CheckRepo_UpdateTagError(t *testing.T) {
 	}
 	gh := &mockGitHub{
 		getLatestRelFn: func(ctx context.Context, owner, repo string) (*domain.Release, error) {
-			return &domain.Release{TagName: "go1.22.0", Name: "Go 1.22"}, nil
+			return &domain.Release{TagName: "go1.22.0"}, nil
 		},
 	}
 
@@ -386,7 +386,7 @@ func TestScanner_Worker_ChecksDequeuedRepo(t *testing.T) {
 	}
 	gh := &mockGitHub{
 		getLatestRelFn: func(ctx context.Context, owner, repo string) (*domain.Release, error) {
-			return &domain.Release{TagName: "go1.22.0", Name: "Go 1.22"}, nil
+			return &domain.Release{TagName: "go1.22.0"}, nil
 		},
 	}
 

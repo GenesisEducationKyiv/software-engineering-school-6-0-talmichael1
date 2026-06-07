@@ -40,7 +40,7 @@ func newTestCache(t *testing.T) (*CachedGitHubClient, *fakeUpstream, *miniredis.
 
 func TestGetLatestRelease_CachesSuccess(t *testing.T) {
 	c, fake, _ := newTestCache(t)
-	fake.getLatestRelease = &domain.Release{TagName: "v1.2.3", Name: "Release 1.2.3", HTMLURL: "https://example.com/v1.2.3"}
+	fake.getLatestRelease = &domain.Release{TagName: "v1.2.3", HTMLURL: "https://example.com/v1.2.3"}
 
 	rel, err := c.GetLatestRelease(context.Background(), "golang", "go")
 	if err != nil {

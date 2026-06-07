@@ -42,7 +42,6 @@ func sampleJob(id int64, tag string) domain.NotificationJob {
 		Email:          "user@example.com",
 		Repo:           "golang/go",
 		Tag:            tag,
-		ReleaseName:    "Go " + tag,
 		ReleaseURL:     "https://example.com/" + tag,
 		UnsubToken:     "tok",
 	}
