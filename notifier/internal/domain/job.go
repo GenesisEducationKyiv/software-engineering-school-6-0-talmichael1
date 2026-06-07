@@ -8,7 +8,6 @@ type NotificationJob struct {
 	Email          string `json:"email"`
 	Repo           string `json:"repo"`
 	Tag            string `json:"tag"`
-	ReleaseName    string `json:"release_name"`
 	ReleaseURL     string `json:"release_url"`
 	UnsubToken     string `json:"unsub_token"`
 	Attempt        int    `json:"attempt"`

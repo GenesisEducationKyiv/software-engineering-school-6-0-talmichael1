@@ -33,11 +33,8 @@ type SubscriptionView struct {
 }
 
 type Release struct {
-	TagName     string `json:"tag_name"`
-	Name        string `json:"name"`
-	HTMLURL     string `json:"html_url"`
-	Body        string `json:"body"`
-	PublishedAt string `json:"published_at"`
+	TagName string `json:"tag_name"`
+	HTMLURL string `json:"html_url"`
 }
 
 type NotificationJob struct {
@@ -45,7 +42,6 @@ type NotificationJob struct {
 	Email          string `json:"email"`
 	Repo           string `json:"repo"`
 	Tag            string `json:"tag"`
-	ReleaseName    string `json:"release_name"`
 	ReleaseURL     string `json:"release_url"`
 	UnsubToken     string `json:"unsub_token"`
 	Attempt        int    `json:"attempt"`
