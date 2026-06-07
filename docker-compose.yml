@@ -24,6 +24,24 @@ services:
       API_KEY: "${API_KEY:-}"
       CORS_ORIGINS: "http://localhost:3000"
       SCAN_INTERVAL: "5m"
+      OTEL_ENABLED: "true"
+      JAEGER_ENDPOINT: "http://jaeger:4318/v1/traces"
+    restart: unless-stopped
+
+  notifier:
+    build: ./notifier
+    env_file:
+      - .env
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      METRICS_PORT: "8081"
+      REDIS_URL: "redis://redis:6379/0"
+      BASE_URL: "http://localhost:3000"
+      MAILGUN_DOMAIN: "${MAILGUN_DOMAIN}"
+      MAILGUN_API_KEY: "${MAILGUN_API_KEY}"
+      MAILGUN_FROM: "${MAILGUN_FROM:-noreply@releases.app}"
       NOTIFICATION_WORKERS: "10"
       OTEL_ENABLED: "true"
       JAEGER_ENDPOINT: "http://jaeger:4318/v1/traces"

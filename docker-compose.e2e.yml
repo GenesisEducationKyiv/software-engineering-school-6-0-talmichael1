@@ -38,7 +38,6 @@ services:
       MAILGUN_API_KEY: ""
       OTEL_ENABLED: "false"
       SCAN_INTERVAL: "30m"
-      NOTIFICATION_WORKERS: "2"
     healthcheck:
       test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/health"]
       interval: 2s
