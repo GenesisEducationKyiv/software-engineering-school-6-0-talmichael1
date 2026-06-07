@@ -11,6 +11,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
 
 	"github-release-notifier/internal/domain"
@@ -204,6 +205,9 @@ func (s *Scanner) checkRepo(ctx context.Context, repo domain.Repository) error {
 		return fmt.Errorf("listing subscribers: %w", err)
 	}
 
+	carrier := propagation.MapCarrier{}
+	otel.GetTextMapPropagator().Inject(ctx, carrier)
+
 	jobs := make([]domain.NotificationJob, 0, len(subs))
 	for _, sub := range subs {
 		jobs = append(jobs, domain.NotificationJob{
@@ -214,6 +218,8 @@ func (s *Scanner) checkRepo(ctx context.Context, repo domain.Repository) error {
 			ReleaseName:    release.Name,
 			ReleaseURL:     release.HTMLURL,
 			UnsubToken:     sub.UnsubscribeToken,
+			Traceparent:    carrier["traceparent"],
+			Tracestate:     carrier["tracestate"],
 		})
 	}
 
