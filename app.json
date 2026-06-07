@@ -18,7 +18,6 @@
     "CORS_ORIGINS": { "value": "https://release-notifier.michaeltal.dev" },
     "OTEL_ENABLED": { "value": "false" },
     "SCAN_INTERVAL": { "value": "5m" },
-    "NOTIFICATION_WORKERS": { "value": "10" },
     "BASE_URL": { "required": true }
   }
 }

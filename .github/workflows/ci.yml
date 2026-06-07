@@ -10,22 +10,31 @@ jobs:
   lint:
     name: Lint
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        module: [".", "notifier"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version: "1.25"
       - uses: golangci/golangci-lint-action@v7
+        with:
+          working-directory: ${{ matrix.module }}
 
   unit:
     name: Unit tests
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        module: [".", "notifier"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version: "1.25"
-      - run: go test -race -count=1 -coverprofile=coverage.out ./...
+      - run: go test -race -count=1 ./...
+        working-directory: ${{ matrix.module }}
 
   integration:
     name: Integration tests
@@ -56,3 +65,4 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: docker build -t github-release-notifier .
+      - run: docker build -t github-release-notifier-notifier ./notifier

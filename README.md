@@ -12,11 +12,18 @@ A Go service that allows users to subscribe to email notifications about new rel
 
 ## Architecture & Design Decisions
 
-The application is a monolith with three logical components running within a single process:
+The application is split into two deployables that communicate over a Redis queue (see [ADR-0005](docs/adr/0005-extract-notifier-microservice.md)):
+
+**API monolith** (`cmd/server`) — the subscription and release-detection domains:
 
 - **API** — HTTP (Gin) and gRPC servers handling subscription management
 - **Scanner** — A leader instance (Redis lock) enqueues due repositories each interval; a worker pool on any instance drains that queue and polls GitHub. Stateless and safe to run as multiple replicas
-- **Notifier** — Worker pool that consumes a reliable Redis queue and sends emails (at-least-once, see below)
+
+**Notifier service** (`notifier/`) — the delivery domain, a standalone module:
+
+- **Notifier** — Worker pool that consumes a reliable Redis queue and sends emails (at-least-once, see below). It has no database; it depends only on Redis and the email backend, so it scales independently of the API
+
+The scanner produces `NotificationJob`s onto the `notifications:pending` queue; the notifier service consumes them. The JSON job shape is the contract between the two.
 
 ### Why no API rate limiting?
 
@@ -87,7 +94,7 @@ The default `docker compose up` brings up the full observability stack alongside
 
 - **Kibana**: http://localhost:5601 — create a data view for `app-logs-*` to query application logs. Each entry carries `trace_id`/`span_id` when emitted inside an OTel span, so you can pivot to Jaeger (http://localhost:16686) by trace ID.
 - **Elasticsearch**: http://localhost:9200
-- **Prometheus**: http://localhost:9091 — scrapes the app's `/metrics` every 15s. RED metrics are exposed for HTTP, GitHub client, notifier jobs, and scanner stages.
+- **Prometheus**: http://localhost:9091 — scrapes both the API monolith (`app:8080`) and the notifier service (`notifier:8081`) every 15s. RED metrics are exposed for HTTP, GitHub client, notifier jobs, and scanner stages.
 - **Grafana**: http://localhost:3001 (anonymous Viewer enabled, or admin/admin) — provisioned with the Prometheus datasource and the *GitHub Release Notifier — RED* dashboard (rate/errors/duration rows for HTTP, GitHub client, notifier, scanner, plus business KPIs).
 
 ## Quick Start
@@ -170,7 +177,8 @@ All configuration is done via environment variables:
 | `BASE_URL` | No | `http://localhost:8080` | Base URL for email links |
 | `SCAN_INTERVAL` | No | `5m` | How often to check for new releases |
 | `SCAN_WORKERS` | No | `5` | Number of parallel scanner workers |
-| `NOTIFICATION_WORKERS` | No | `10` | Number of parallel email workers |
+| `NOTIFICATION_WORKERS` | No | `10` | Number of parallel email workers (**notifier service**) |
+| `METRICS_PORT` | No | `8081` | Prometheus metrics port (**notifier service**) |
 | `API_KEY` | No | — | API key for `X-API-Key` header auth (disabled if empty) |
 | `DEBUG` | No | `false` | Debug logging; also activates console email backend |
 | `CORS_ORIGINS` | No | `*` | Allowed CORS origins for the frontend |
@@ -180,25 +188,28 @@ All configuration is done via environment variables:
 ## Project Structure
 
 ```
-├── cmd/server/          # Entrypoint and dependency wiring
+├── cmd/server/          # API monolith entrypoint and dependency wiring
 ├── internal/
 │   ├── config/          # Environment-based configuration
 │   ├── domain/          # Domain models and error types
 │   ├── handler/         # HTTP handlers and middleware
-│   ├── service/         # Business logic (subscribe, scan, notify, cleanup)
+│   ├── service/         # Business logic (subscribe, scan, cleanup)
 │   ├── repository/      # Data access interfaces and PostgreSQL implementation
 │   ├── github/          # GitHub API client with rate limit handling
 │   ├── cache/           # Redis caching layer for GitHub responses
-│   ├── email/           # Mailgun sender + console backend
-│   ├── queue/           # Redis reliable notification queue + repo-check queue
+│   ├── email/           # Mailgun sender + console backend (confirmation emails)
+│   ├── queue/           # Redis notification producer + repo-check queue
 │   ├── lock/            # Redis leader lock (scanner singleton election)
 │   ├── grpc/            # gRPC server and protobuf definitions
 │   └── tracing/         # OpenTelemetry setup
+├── notifier/            # Delivery microservice — its own Go module (see ADR-0005)
+│   ├── cmd/notifier/    # Entrypoint
+│   └── internal/        # Queue consumer, email delivery, release templates
 ├── migrations/          # PostgreSQL schema migrations (embedded at compile time)
 ├── web/                 # Vue.js frontend + nginx config
 ├── api/                 # Swagger specification
-├── Dockerfile           # Multi-stage build
-├── docker-compose.yml   # Full stack: app + PostgreSQL + Redis + Jaeger + nginx
+├── Dockerfile           # Multi-stage build (API monolith)
+├── docker-compose.yml   # Full stack: app + notifier + PostgreSQL + Redis + Jaeger + nginx
 └── .github/workflows/   # CI pipeline (lint, test, build)
 ```
 
@@ -253,4 +264,5 @@ End-to-end tests hitting a real PostgreSQL database:
 ## Limitations
 
 - **gRPC on Heroku** — Heroku exposes a single HTTP port per dyno. gRPC requires its own TCP port, so it is only available in Docker where both 8080 and 9090 are exposed.
+- **Notifier service on Heroku** — The delivery service is a separate module/process, and the single-dyno `heroku/go` deployment only builds and runs the API monolith. So the live demo sends confirmation emails (the API sends those inline) but does not deliver release notifications — the full scan→notify pipeline runs in the `docker compose` stack, which runs both services against the shared Redis.
 - **Mailgun free tier** — The demo deployment is limited to 100 emails/day. If you don't receive an email, this limit may have been reached.

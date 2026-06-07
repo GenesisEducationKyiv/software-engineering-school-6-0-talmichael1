@@ -1,0 +1,6 @@
+# The notifier is a separate module with its own image (notifier/Dockerfile);
+# it is not part of the API monolith build context.
+notifier/
+
+bin/
+.git/
