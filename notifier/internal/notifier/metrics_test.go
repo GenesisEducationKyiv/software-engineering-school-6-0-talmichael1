@@ -11,7 +11,6 @@ import (
 	"github-release-notifier/notifier/internal/domain"
 	"github-release-notifier/notifier/internal/email"
 	"github-release-notifier/notifier/internal/metrics"
-	"github-release-notifier/notifier/internal/urls"
 )
 
 func histogramCount(t *testing.T) uint64 {
@@ -23,14 +22,17 @@ func histogramCount(t *testing.T) uint64 {
 	return m.GetHistogram().GetSampleCount()
 }
 
+func metricsJob(id int64) domain.NotificationJob {
+	return domain.NotificationJob{SubscriptionID: id, Email: "u@example.com", Repo: "x/y", Tag: "v1", UnsubToken: "t"}
+}
+
 func TestNotifier_Metrics_SentIncrementsSentOutcome(t *testing.T) {
 	before := testutil.ToFloat64(metrics.NotifierJobsProcessed.WithLabelValues("sent"))
 
-	q := newMockJobQueue()
-	n := New(q, &releaseEmailMock{}, urls.Builder{BaseURL: "http://localhost:8080"}, 1)
-	job := &domain.NotificationJob{SubscriptionID: 100, Email: "u@example.com", Repo: "x/y", Tag: "v1", UnsubToken: "t"}
+	q := newMockQueue()
+	n := newNotifier(q, &releaseEmailMock{})
 
-	if err := n.processJob(context.Background(), job); err != nil {
+	if err := n.processJob(context.Background(), q, deliver(metricsJob(100))); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -43,12 +45,11 @@ func TestNotifier_Metrics_SentIncrementsSentOutcome(t *testing.T) {
 func TestNotifier_Metrics_DuplicateIncrementsDuplicateOutcome(t *testing.T) {
 	before := testutil.ToFloat64(metrics.NotifierJobsProcessed.WithLabelValues("duplicate"))
 
-	q := newMockJobQueue()
+	q := newMockQueue()
 	q.sent["101:v1"] = true
-	n := New(q, &releaseEmailMock{}, urls.Builder{BaseURL: "http://localhost:8080"}, 1)
-	job := &domain.NotificationJob{SubscriptionID: 101, Email: "u@example.com", Repo: "x/y", Tag: "v1", UnsubToken: "t"}
+	n := newNotifier(q, &releaseEmailMock{})
 
-	if err := n.processJob(context.Background(), job); err != nil {
+	if err := n.processJob(context.Background(), q, deliver(metricsJob(101))); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -61,14 +62,13 @@ func TestNotifier_Metrics_DuplicateIncrementsDuplicateOutcome(t *testing.T) {
 func TestNotifier_Metrics_RetryIncrementsRetriedOutcome(t *testing.T) {
 	before := testutil.ToFloat64(metrics.NotifierJobsProcessed.WithLabelValues("retried"))
 
-	q := newMockJobQueue()
-	failing := &releaseEmailMock{sendFn: func(ctx context.Context, msg email.Message) error {
+	q := newMockQueue()
+	failing := &releaseEmailMock{sendFn: func(_ context.Context, _ email.Message) error {
 		return fmt.Errorf("smtp")
 	}}
-	n := New(q, failing, urls.Builder{BaseURL: "http://localhost:8080"}, 1)
-	job := &domain.NotificationJob{SubscriptionID: 102, Email: "u@example.com", Repo: "x/y", Tag: "v1", UnsubToken: "t", Attempt: 0}
+	n := newNotifier(q, failing)
 
-	if err := n.processJob(context.Background(), job); err != nil {
+	if err := n.processJob(context.Background(), q, deliver(metricsJob(102))); err != nil {
 		t.Fatalf("unexpected error (should requeue): %v", err)
 	}
 
@@ -81,14 +81,13 @@ func TestNotifier_Metrics_RetryIncrementsRetriedOutcome(t *testing.T) {
 func TestNotifier_Metrics_MaxRetriesIncrementsFailedOutcome(t *testing.T) {
 	before := testutil.ToFloat64(metrics.NotifierJobsProcessed.WithLabelValues("failed"))
 
-	q := newMockJobQueue()
-	failing := &releaseEmailMock{sendFn: func(ctx context.Context, msg email.Message) error {
+	q := newMockQueue()
+	failing := &releaseEmailMock{sendFn: func(_ context.Context, _ email.Message) error {
 		return fmt.Errorf("smtp")
 	}}
-	n := New(q, failing, urls.Builder{BaseURL: "http://localhost:8080"}, 1)
-	job := &domain.NotificationJob{SubscriptionID: 103, Email: "u@example.com", Repo: "x/y", Tag: "v1", UnsubToken: "t", Attempt: maxRetries}
+	n := newNotifier(q, failing)
 
-	if err := n.processJob(context.Background(), job); err == nil {
+	if err := n.processJob(context.Background(), q, redelivered(metricsJob(103), maxRetries)); err == nil {
 		t.Fatal("expected error after max retries")
 	}
 
@@ -101,10 +100,9 @@ func TestNotifier_Metrics_MaxRetriesIncrementsFailedOutcome(t *testing.T) {
 func TestNotifier_Metrics_DurationObserved(t *testing.T) {
 	before := histogramCount(t)
 
-	q := newMockJobQueue()
-	n := New(q, &releaseEmailMock{}, urls.Builder{BaseURL: "http://localhost:8080"}, 1)
-	job := &domain.NotificationJob{SubscriptionID: 110, Email: "u@example.com", Repo: "x/y", Tag: "v1", UnsubToken: "t"}
-	_ = n.processJob(context.Background(), job)
+	q := newMockQueue()
+	n := newNotifier(q, &releaseEmailMock{})
+	_ = n.processJob(context.Background(), q, deliver(metricsJob(110)))
 
 	after := histogramCount(t)
 	if after <= before {

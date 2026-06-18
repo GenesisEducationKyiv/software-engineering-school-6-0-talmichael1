@@ -11,35 +11,7 @@ import (
 	"github-release-notifier/internal/domain"
 )
 
-const (
-	pendingQueue = "notifications:pending"
-
-	repoCheckQueue = "repocheck:pending"
-)
-
-type NotificationQueue struct {
-	rdb *redis.Client
-}
-
-func NewNotificationQueue(rdb *redis.Client) *NotificationQueue {
-	return &NotificationQueue{rdb: rdb}
-}
-
-func (q *NotificationQueue) EnqueueBatch(ctx context.Context, jobs []domain.NotificationJob) error {
-	if len(jobs) == 0 {
-		return nil
-	}
-	pipe := q.rdb.Pipeline()
-	for _, job := range jobs {
-		data, err := json.Marshal(job)
-		if err != nil {
-			return fmt.Errorf("marshalling job: %w", err)
-		}
-		pipe.LPush(ctx, pendingQueue, data)
-	}
-	_, err := pipe.Exec(ctx)
-	return err
-}
+const repoCheckQueue = "repocheck:pending"
 
 type RepoCheckQueue struct {
 	rdb *redis.Client

@@ -13,39 +13,55 @@ import (
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
 
-	"github-release-notifier/notifier/internal/domain"
 	"github-release-notifier/notifier/internal/email"
 	"github-release-notifier/notifier/internal/metrics"
+	"github-release-notifier/notifier/internal/queue"
 	"github-release-notifier/notifier/internal/urls"
 )
 
 var tracer = otel.Tracer("notifier")
 
 const (
-	maxRetries   = 5
-	reapInterval = 30 * time.Second
+	maxRetries       = 5
+	reestablishDelay = 1 * time.Second
 )
 
-type JobDequeuer interface {
-	Dequeue(ctx context.Context, timeout time.Duration) (*domain.NotificationJob, error)
-	Ack(ctx context.Context, job domain.NotificationJob) error
-	Reclaim(ctx context.Context) (int, error)
+// JobConsumer drains one channel of the notifications queue. Each worker owns
+// its own consumer; the queue redelivers a job to another worker if this one
+// crashes before acking (ADR-0006).
+type JobConsumer interface {
+	Dequeue(ctx context.Context) (*queue.Delivery, error)
+	Ack(d *queue.Delivery) error
+	Nack(d *queue.Delivery) error
+	Close() error
+}
+
+// Deduper suppresses re-sends of an already-delivered (subscription, tag). It is
+// Redis-backed key-value state, separate from the queue (ADR-0006).
+type Deduper interface {
 	IsSent(ctx context.Context, subscriptionID int64, tag string) (bool, error)
 	MarkSent(ctx context.Context, subscriptionID int64, tag string) error
-	Requeue(ctx context.Context, job domain.NotificationJob) error
 }
 
 type Notifier struct {
-	queue      JobDequeuer
+	consume    func(ctx context.Context) (JobConsumer, error)
+	dedup      Deduper
 	email      email.Sender
 	templates  email.Templates
 	urls       urls.Builder
 	numWorkers int
 }
 
-func New(queue JobDequeuer, sender email.Sender, urlBuilder urls.Builder, numWorkers int) *Notifier {
+func New(
+	consume func(ctx context.Context) (JobConsumer, error),
+	dedup Deduper,
+	sender email.Sender,
+	urlBuilder urls.Builder,
+	numWorkers int,
+) *Notifier {
 	return &Notifier{
-		queue:      queue,
+		consume:    consume,
+		dedup:      dedup,
 		email:      sender,
 		templates:  email.Templates{},
 		urls:       urlBuilder,
@@ -65,73 +81,53 @@ func (n *Notifier) Run(ctx context.Context) {
 		}(i)
 	}
 
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		n.reaper(ctx)
-	}()
-
 	wg.Wait()
 	slog.InfoContext(ctx, "notifier stopped")
 }
 
-func (n *Notifier) reaper(ctx context.Context) {
-	n.reclaim(ctx)
-	ticker := time.NewTicker(reapInterval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			n.reclaim(ctx)
-		}
-	}
-}
-
-func (n *Notifier) reclaim(ctx context.Context) {
-	ctx, span := tracer.Start(ctx, "notifier.reclaim")
-	defer span.End()
-
-	reclaimed, err := n.queue.Reclaim(ctx)
-	if err != nil {
-		slog.ErrorContext(ctx, "notifier: reclaiming expired jobs", "error", err)
-		return
-	}
-	if reclaimed > 0 {
-		slog.WarnContext(ctx, "notifier: reclaimed expired in-flight jobs", "count", reclaimed)
-	}
-}
-
 func (n *Notifier) worker(ctx context.Context, id int) {
-	for {
-		if ctx.Err() != nil {
-			return
-		}
-
-		job, err := n.queue.Dequeue(ctx, 5*time.Second)
+	for ctx.Err() == nil {
+		consumer, err := n.consume(ctx)
 		if err != nil {
 			if ctx.Err() != nil {
 				return
 			}
-			slog.ErrorContext(ctx, "notifier: dequeue error", "worker", id, "error", err)
+			slog.ErrorContext(ctx, "notifier: establishing consumer", "worker", id, "error", err)
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(reestablishDelay):
+			}
 			continue
 		}
-		if job == nil {
-			continue
-		}
+		n.drain(ctx, id, consumer)
+		_ = consumer.Close()
+	}
+}
 
-		if err := n.processJob(ctx, job); err != nil {
+// drain processes deliveries until the channel closes (reconnect) or ctx is
+// cancelled, returning so the worker can re-establish its consumer.
+func (n *Notifier) drain(ctx context.Context, id int, c JobConsumer) {
+	for {
+		d, err := c.Dequeue(ctx)
+		if err != nil {
+			if ctx.Err() == nil {
+				slog.WarnContext(ctx, "notifier: consumer closed, re-establishing", "worker", id, "error", err)
+			}
+			return
+		}
+		if err := n.processJob(ctx, c, d); err != nil {
 			slog.ErrorContext(ctx, "notifier: processing job",
 				"worker", id,
-				"email", job.Email,
-				"repo", job.Repo,
+				"email", d.Job.Email,
+				"repo", d.Job.Repo,
 				"error", err)
 		}
 	}
 }
 
-func (n *Notifier) processJob(ctx context.Context, job *domain.NotificationJob) error {
+func (n *Notifier) processJob(ctx context.Context, c JobConsumer, d *queue.Delivery) error {
+	job := d.Job
 	ctx = otel.GetTextMapPropagator().Extract(ctx, propagation.MapCarrier{
 		"traceparent": job.Traceparent,
 		"tracestate":  job.Tracestate,
@@ -146,15 +142,18 @@ func (n *Notifier) processJob(ctx context.Context, job *domain.NotificationJob) 
 	timer := prometheus.NewTimer(metrics.NotifierJobDuration)
 	defer timer.ObserveDuration()
 
-	sent, err := n.queue.IsSent(ctx, job.SubscriptionID, job.Tag)
+	sent, err := n.dedup.IsSent(ctx, job.SubscriptionID, job.Tag)
 	if err != nil {
+		// Outcome unknown — return the job to the queue rather than risk a
+		// missed send.
+		n.nack(ctx, c, d)
 		return fmt.Errorf("checking dedup: %w", err)
 	}
 	if sent {
 		slog.DebugContext(ctx, "duplicate notification skipped",
 			"subscription_id", job.SubscriptionID,
 			"tag", job.Tag)
-		n.ack(ctx, job)
+		n.ack(ctx, c, d)
 		metrics.NotifierJobsProcessed.WithLabelValues("duplicate").Inc()
 		return nil
 	}
@@ -162,28 +161,28 @@ func (n *Notifier) processJob(ctx context.Context, job *domain.NotificationJob) 
 	unsubURL := n.urls.Unsubscribe(job.UnsubToken)
 	msg := n.templates.ReleaseNotification(job.Email, job.Repo, job.Tag, job.ReleaseURL, unsubURL)
 
-	err = n.email.Send(ctx, msg)
-	if err != nil {
-		if job.Attempt < maxRetries {
+	if err := n.email.Send(ctx, msg); err != nil {
+		if d.DeliveryCount < maxRetries {
 			slog.WarnContext(ctx, "notification send failed, requeuing",
 				"email", job.Email,
-				"attempt", job.Attempt+1,
+				"delivery", d.DeliveryCount+1,
 				"error", err)
 			metrics.NotifierJobsProcessed.WithLabelValues("retried").Inc()
-			return n.queue.Requeue(ctx, *job)
+			n.nack(ctx, c, d)
+			return nil
 		}
 		metrics.NotifierJobsProcessed.WithLabelValues("failed").Inc()
-		n.ack(ctx, job)
+		n.ack(ctx, c, d)
 		return fmt.Errorf("max retries exceeded for %s: %w", job.Email, err)
 	}
 
-	if err := n.queue.MarkSent(ctx, job.SubscriptionID, job.Tag); err != nil {
+	if err := n.dedup.MarkSent(ctx, job.SubscriptionID, job.Tag); err != nil {
 		slog.ErrorContext(ctx, "failed to mark notification as sent (email was delivered)",
 			"subscription_id", job.SubscriptionID,
 			"tag", job.Tag,
 			"error", err)
 	}
-	n.ack(ctx, job)
+	n.ack(ctx, c, d)
 	metrics.NotifierJobsProcessed.WithLabelValues("sent").Inc()
 
 	slog.InfoContext(ctx, "notification sent",
@@ -193,11 +192,20 @@ func (n *Notifier) processJob(ctx context.Context, job *domain.NotificationJob) 
 	return nil
 }
 
-func (n *Notifier) ack(ctx context.Context, job *domain.NotificationJob) {
-	if err := n.queue.Ack(ctx, *job); err != nil {
+func (n *Notifier) ack(ctx context.Context, c JobConsumer, d *queue.Delivery) {
+	if err := c.Ack(d); err != nil {
 		slog.ErrorContext(ctx, "notifier: ack failed",
-			"subscription_id", job.SubscriptionID,
-			"tag", job.Tag,
+			"subscription_id", d.Job.SubscriptionID,
+			"tag", d.Job.Tag,
+			"error", err)
+	}
+}
+
+func (n *Notifier) nack(ctx context.Context, c JobConsumer, d *queue.Delivery) {
+	if err := c.Nack(d); err != nil {
+		slog.ErrorContext(ctx, "notifier: nack failed",
+			"subscription_id", d.Job.SubscriptionID,
+			"tag", d.Job.Tag,
 			"error", err)
 	}
 }

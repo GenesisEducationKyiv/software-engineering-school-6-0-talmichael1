@@ -11,7 +11,6 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	"github-release-notifier/notifier/internal/domain"
-	"github-release-notifier/notifier/internal/urls"
 )
 
 func TestProcessJob_ContinuesTraceFromJob(t *testing.T) {
@@ -37,8 +36,9 @@ func TestProcessJob_ContinuesTraceFromJob(t *testing.T) {
 	carrier := propagation.MapCarrier{}
 	propagation.TraceContext{}.Inject(trace.ContextWithSpanContext(context.Background(), parent), carrier)
 
-	n := New(newMockJobQueue(), &releaseEmailMock{}, urls.Builder{BaseURL: "http://localhost:8080"}, 1)
-	job := &domain.NotificationJob{
+	q := newMockQueue()
+	n := newNotifier(q, &releaseEmailMock{})
+	job := domain.NotificationJob{
 		SubscriptionID: 1,
 		Email:          "u@example.com",
 		Repo:           "x/y",
@@ -46,7 +46,7 @@ func TestProcessJob_ContinuesTraceFromJob(t *testing.T) {
 		UnsubToken:     "t",
 		Traceparent:    carrier["traceparent"],
 	}
-	if err := n.processJob(context.Background(), job); err != nil {
+	if err := n.processJob(context.Background(), q, deliver(job)); err != nil {
 		t.Fatalf("processJob: %v", err)
 	}
 
