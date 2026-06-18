@@ -84,6 +84,9 @@ services:
     ports:
       - "5672:5672"
       - "15672:15672"
+      - "15692:15692"
+    volumes:
+      - ./observability/rabbitmq/enabled_plugins:/etc/rabbitmq/enabled_plugins:ro
     healthcheck:
       test: ["CMD", "rabbitmq-diagnostics", "check_port_connectivity"]
       interval: 5s
