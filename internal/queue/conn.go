@@ -10,7 +10,10 @@ import (
 	amqp "github.com/rabbitmq/amqp091-go"
 )
 
-const notificationsQueue = "notifications"
+const (
+	notificationsQueue = "notifications"
+	repoChecksQueue    = "repo_checks"
+)
 
 const (
 	reconnectMinBackoff = 1 * time.Second
@@ -84,6 +87,10 @@ func (c *Connection) NotificationPublisher() *Publisher {
 	return &Publisher{conn: c, declare: declareNotifications}
 }
 
+func (c *Connection) RepoCheckPublisher() *Publisher {
+	return &Publisher{conn: c, declare: declareRepoChecks}
+}
+
 func (p *Publisher) PublishWithContext(ctx context.Context, exchange, key string, mandatory, immediate bool, msg amqp.Publishing) error {
 	ch, err := p.channel(ctx)
 	if err != nil {
@@ -136,6 +143,17 @@ func declareNotifications(ch *amqp.Channel) error {
 	})
 	if err != nil {
 		return fmt.Errorf("declaring %q queue: %w", notificationsQueue, err)
+	}
+	return nil
+}
+
+// declareRepoChecks declares the repo-check work queue. A durable classic queue
+// is enough — repo checks are auto-acked and lossy by design (a dropped check is
+// re-enqueued next scan cycle), so they need neither quorum nor persistence.
+func declareRepoChecks(ch *amqp.Channel) error {
+	_, err := ch.QueueDeclare(repoChecksQueue, true, false, false, false, nil)
+	if err != nil {
+		return fmt.Errorf("declaring %q queue: %w", repoChecksQueue, err)
 	}
 	return nil
 }
