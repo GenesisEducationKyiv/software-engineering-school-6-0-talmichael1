@@ -12,7 +12,7 @@ A Go service that allows users to subscribe to email notifications about new rel
 
 ## Architecture & Design Decisions
 
-The application is split into two deployables that communicate over a Redis queue (see [ADR-0005](docs/adr/0005-extract-notifier-microservice.md)):
+The application is split into two deployables that communicate over a RabbitMQ queue (see [ADR-0005](docs/adr/0005-extract-notifier-microservice.md) and [ADR-0006](docs/adr/0006-rabbitmq-message-broker.md)):
 
 **API monolith** (`cmd/server`) — the subscription and release-detection domains:
 
@@ -21,28 +21,28 @@ The application is split into two deployables that communicate over a Redis queu
 
 **Notifier service** (`notifier/`) — the delivery domain, a standalone module:
 
-- **Notifier** — Worker pool that consumes a reliable Redis queue and sends emails (at-least-once, see below). It has no database; it depends only on Redis and the email backend, so it scales independently of the API
+- **Notifier** — Worker pool that consumes the RabbitMQ `notifications` queue and sends emails (at-least-once, see below). It depends only on RabbitMQ (queue), Redis (send-dedup) and the email backend — no database — so it scales independently of the API
 
-The scanner produces `NotificationJob`s onto the `notifications:pending` queue; the notifier service consumes them. The JSON job shape is the contract between the two.
+The scanner produces `NotificationJob`s onto the RabbitMQ `notifications` queue; the notifier service consumes them. The JSON job shape is the contract between the two.
 
 ### Why no API rate limiting?
 
 The Swagger contract does not define `429` responses on any endpoint. Adding rate limiting would introduce response codes not present in the specification, violating the immutable contract requirement. In production, this would be handled at the infrastructure level (nginx, API gateway, or cloud load balancer).
 
-### Why Redis queue instead of a database table?
+### Why a message broker instead of a database table?
 
 At scale (hundreds of thousands of subscribers), a PostgreSQL notification queue table accumulates millions of rows that require vacuum tuning, cleanup crons, and index maintenance. A single popular repository release generates one job per subscriber — that's potentially 100k+ rows in a single scan cycle.
 
-Redis lists provide O(1) push/pop with automatic memory reclaim. LPUSH/BRPOP is purpose-built for job queues. The tradeoff is durability — Redis is not as durable as PostgreSQL. For notification jobs (which are idempotent and can be re-derived from the scan cycle), this is an acceptable tradeoff. If Redis loses data, the next scan cycle re-detects the release and re-enqueues.
+A broker is purpose-built for this: O(1) enqueue/dequeue, competing consumers, and at-least-once delivery without table maintenance. We use **RabbitMQ** — durable queues, per-message ack with automatic redelivery on consumer crash, and a retry counter the broker maintains for us. The full comparison against SQS, Kafka, and the previous hand-rolled Redis queue is in [ADR-0006](docs/adr/0006-rabbitmq-message-broker.md). Notification jobs are idempotent and re-derivable, so even total broker data loss is recoverable: the next scan cycle re-detects the release and re-enqueues.
 
 ### How the scan → notify pipeline works
 
 1. Once per `SCAN_INTERVAL`, a single **leader** instance (claimed via Redis `SET NX EX`) fetches all repositories with at least one **confirmed** subscriber (a single SQL JOIN) and pushes each onto a `repocheck` Redis queue. Non-leader instances skip the tick — no duplicate enqueues or races on the tag update
 2. Worker pools across all instances drain `repocheck` (`SCAN_WORKERS`, default 5) — scan work is distributed, and any replica is interchangeable. The queue is lossy by design: a dropped repo is simply re-checked next cycle
 3. Each worker calls `GetLatestRelease` via the cached GitHub client (Redis, 10min TTL). 10,000 subscribers to `golang/go` = **1 GitHub API call**, not 10,000
-4. If `release.TagName != repo.LastSeenTag`, it builds a `NotificationJob` per subscriber and enqueues them all to Redis in a single pipeline (`LPUSH`)
+4. If `release.TagName != repo.LastSeenTag`, it builds a `NotificationJob` per subscriber and publishes one persistent message per subscriber to the RabbitMQ `notifications` queue
 5. `last_seen_tag` in PostgreSQL is updated **only after** successful enqueue — this guarantees at-least-once delivery. If the process crashes between enqueue and tag update, the next scan re-detects the release
-6. Notifier workers use a **reliable queue**: `Dequeue` atomically moves a job into a `processing` sorted set stamped with a visibility deadline (Lua `RPOP`+`ZADD`), so a crash mid-send can't lose it. After a two-phase dedup (**check** `EXISTS` before sending, **mark** `SET` with TTL after), the job is `Ack`ed (`ZREM`). A reaper moves jobs whose deadline passed back to `pending`, recovering work orphaned by dead workers — across instances, with no startup dependency (see ADR-0004)
+6. Notifier workers consume with **manual ack**: an unacked job is automatically redelivered if the worker crashes mid-send, so nothing is lost without any visibility-timeout or reaper machinery. After a two-phase dedup (**check** before sending, **mark** with TTL after — in Redis), the job is `Ack`ed. A failed send is `Nack`ed back onto the queue; the broker's `x-delivery-count` caps retries before the job is dropped (see [ADR-0006](docs/adr/0006-rabbitmq-message-broker.md))
 
 ### Why seed `last_seen_tag` on subscribe?
 
@@ -69,7 +69,8 @@ Without a `GITHUB_TOKEN`, the limit is 60 requests/hour. With a token (any GitHu
 ### Connection pooling
 
 - **PostgreSQL**: 18 max connections, 8 idle (Heroku essential-0 allows 20 — we leave headroom for migrations and admin tools)
-- **Redis**: Pool of 15 connections, 5 kept idle (enough for 10 notification workers + scanner + API handlers)
+- **Redis**: Pool of 15 connections, 5 kept idle (cache, leader lock, and notifier send-dedup)
+- **RabbitMQ**: one long-lived connection per service; concurrency comes from channels (one consume channel per notifier worker), with automatic reconnect on drop
 
 ## Tech Stack
 
@@ -78,7 +79,8 @@ Without a `GITHUB_TOKEN`, the limit is 60 requests/hour. With a token (any GitHu
 | Language | Go 1.25 |
 | HTTP Router | Gin |
 | Database | PostgreSQL 16 (sqlx, no ORM) |
-| Cache & Queue | Redis 7 |
+| Cache, lock & dedup | Redis 7 |
+| Message broker | RabbitMQ 3.13 |
 | Migrations | golang-migrate (embedded via `embed.FS`) |
 | Email | Mailgun API |
 | Metrics | Prometheus |
@@ -125,9 +127,10 @@ When Mailgun credentials are not configured, emails are logged to stdout (consol
 ### Running Locally (without Docker)
 
 ```bash
-# Requires PostgreSQL and Redis running locally
+# Requires PostgreSQL, Redis, and RabbitMQ running locally
 export DATABASE_URL="postgres://user:pass@localhost:5432/release_notifier?sslmode=disable"
 export REDIS_URL="redis://localhost:6379/0"
+export RABBITMQ_URL="amqp://guest:guest@localhost:5672/"
 
 go run ./cmd/server
 ```
@@ -166,7 +169,8 @@ All configuration is done via environment variables:
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
 | `DATABASE_URL` | Yes | — | PostgreSQL connection string |
-| `REDIS_URL` | No | `redis://localhost:6379/0` | Redis connection string |
+| `REDIS_URL` | No | `redis://localhost:6379/0` | Redis connection string (cache, lock, dedup) |
+| `RABBITMQ_URL` | No | `amqp://guest:guest@localhost:5672/` | RabbitMQ connection string (queue broker) |
 | `MAILGUN_DOMAIN` | No | — | Mailgun sending domain (console backend if empty) |
 | `MAILGUN_API_KEY` | No | — | Mailgun API key (console backend if empty) |
 | `MAILGUN_FROM` | No | `noreply@releases.app` | Sender email address |
@@ -198,18 +202,18 @@ All configuration is done via environment variables:
 │   ├── github/          # GitHub API client with rate limit handling
 │   ├── cache/           # Redis caching layer for GitHub responses
 │   ├── email/           # Mailgun sender + console backend (confirmation emails)
-│   ├── queue/           # Redis notification producer + repo-check queue
+│   ├── queue/           # RabbitMQ notification producer + Redis repo-check queue
 │   ├── lock/            # Redis leader lock (scanner singleton election)
 │   ├── grpc/            # gRPC server and protobuf definitions
 │   └── tracing/         # OpenTelemetry setup
 ├── notifier/            # Delivery microservice — its own Go module (see ADR-0005)
 │   ├── cmd/notifier/    # Entrypoint
-│   └── internal/        # Queue consumer, email delivery, release templates
+│   └── internal/        # Queue consumer + dedup, email delivery, release templates
 ├── migrations/          # PostgreSQL schema migrations (embedded at compile time)
 ├── web/                 # Vue.js frontend + nginx config
 ├── api/                 # Swagger specification
 ├── Dockerfile           # Multi-stage build (API monolith)
-├── docker-compose.yml   # Full stack: app + notifier + PostgreSQL + Redis + Jaeger + nginx
+├── docker-compose.yml   # Full stack: app + notifier + PostgreSQL + Redis + RabbitMQ + Jaeger + nginx
 └── .github/workflows/   # CI pipeline (lint, test, build)
 ```
 
@@ -228,9 +232,10 @@ DATABASE_URL="postgres://user:pass@localhost:5432/test_db?sslmode=disable" \
 
 - **Subscription service** — validation, subscribe/confirm/unsubscribe flows, email failure rollback, rate limit propagation, tag seeding
 - **Scanner** — leader-gated enqueue (and skip when not leader), worker repo dispatch, new release detection, no change, no releases, GitHub errors, context cancellation, enqueue errors, tag update errors, subscriber listing errors
-- **Notifier** — job processing, two-phase deduplication, retry logic, max retries, ack on terminal states, no-ack when outcome unknown, reaper reclaim on startup, dedup check errors, mark-sent errors
+- **Notifier** — job processing, two-phase deduplication, nack-requeue on send failure, max-retries drop, ack on terminal states, nack-for-recovery when outcome unknown, dedup check errors, mark-sent errors
 - **Leader lock** — acquire, contention while held, re-acquire after expiry
-- **Reliable queue** — move-to-processing on dequeue, ack removal, requeue, reaper reclaims expired and leaves live in-flight jobs
+- **Notification queue** (RabbitMQ) — persistent publish of each job, x-delivery-count parsing, poison-message drop, ack, nack-requeue, closed-channel and cancellation handling
+- **Send dedup** (Redis) — mark with TTL, is-sent before/after, key scoping by subscription and tag
 - **Cleanup** — stale subscription deletion, error handling
 - **GitHub client** — rate limit header parsing, 429 retry, auth header, response decoding
 - **Cached GitHub client** (Redis) — cache hits/misses, TTL behavior, caching of 200/404, no caching for 429/transient errors, key separation
@@ -264,5 +269,5 @@ End-to-end tests hitting a real PostgreSQL database:
 ## Limitations
 
 - **gRPC on Heroku** — Heroku exposes a single HTTP port per dyno. gRPC requires its own TCP port, so it is only available in Docker where both 8080 and 9090 are exposed.
-- **Notifier service on Heroku** — The delivery service is a separate module/process, and the single-dyno `heroku/go` deployment only builds and runs the API monolith. So the live demo sends confirmation emails (the API sends those inline) but does not deliver release notifications — the full scan→notify pipeline runs in the `docker compose` stack, which runs both services against the shared Redis.
+- **Notifier service on Heroku** — The delivery service is a separate module/process, and the single-dyno `heroku/go` deployment only builds and runs the API monolith. So the live demo sends confirmation emails (the API sends those inline) but does not deliver release notifications — the full scan→notify pipeline runs in the `docker compose` stack, which runs both services against the shared RabbitMQ broker and Redis.
 - **Mailgun free tier** — The demo deployment is limited to 100 emails/day. If you don't receive an email, this limit may have been reached.

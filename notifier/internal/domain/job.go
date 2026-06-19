@@ -1,8 +1,9 @@
 package domain
 
 // NotificationJob is the wire contract shared with the producer (the API +
-// scanner monolith) over the Redis queue. Its JSON shape must stay in sync
-// with the producer's copy — see ADR-0005.
+// scanner monolith) over the RabbitMQ queue. Its JSON shape must stay in sync
+// with the producer's copy — see ADR-0005. Retry bookkeeping lives in the
+// broker (x-delivery-count), not in this contract — see ADR-0006.
 type NotificationJob struct {
 	SubscriptionID int64  `json:"subscription_id"`
 	Email          string `json:"email"`
@@ -10,7 +11,6 @@ type NotificationJob struct {
 	Tag            string `json:"tag"`
 	ReleaseURL     string `json:"release_url"`
 	UnsubToken     string `json:"unsub_token"`
-	Attempt        int    `json:"attempt"`
 
 	// W3C trace context, set by the producer so this service can continue the
 	// scanner's trace across the queue boundary (see ADR-0005).

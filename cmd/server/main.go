@@ -82,7 +82,13 @@ func run() error {
 	}
 	defer func() { _ = rdb.Close() }()
 
-	subscriptionSvc, scanner, cleanup := buildServices(cfg, db, rdb)
+	rabbitConn, err := queue.Dial(cfg.RabbitURL)
+	if err != nil {
+		return fmt.Errorf("connecting to rabbitmq: %w", err)
+	}
+	defer func() { _ = rabbitConn.Close() }()
+
+	subscriptionSvc, scanner, cleanup := buildServices(cfg, db, rdb, rabbitConn)
 
 	router := buildRouter(cfg, subscriptionSvc)
 	httpServer := &http.Server{
@@ -171,7 +177,7 @@ func connectRedis(rawURL string) (*redis.Client, error) {
 	return rdb, nil
 }
 
-func buildServices(cfg *config.Config, db *sqlx.DB, rdb *redis.Client) (
+func buildServices(cfg *config.Config, db *sqlx.DB, rdb *redis.Client, rabbitConn *queue.Connection) (
 	*service.SubscriptionService, *service.Scanner, *service.Cleanup,
 ) {
 	repoStore := postgres.NewRepositoryStore(db)
@@ -189,7 +195,7 @@ func buildServices(cfg *config.Config, db *sqlx.DB, rdb *redis.Client) (
 		mailer = email.NewMailgunSender(cfg.MailgunDomain, cfg.MailgunAPIKey, cfg.MailgunFrom, cfg.MailgunAPIBase)
 	}
 
-	notifQueue := queue.NewNotificationQueue(rdb)
+	notifQueue := queue.NewNotificationQueue(rabbitConn.NotificationPublisher())
 	repoCheckQueue := queue.NewRepoCheckQueue(rdb)
 	scanLock := lock.NewRedisLock(rdb)
 	urlBuilder := urls.Builder{BaseURL: cfg.BaseURL}

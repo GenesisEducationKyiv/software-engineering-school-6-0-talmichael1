@@ -19,6 +19,14 @@ services:
       timeout: 2s
       retries: 20
 
+  rabbitmq:
+    image: rabbitmq:3.13-alpine
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "check_port_connectivity"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
   app:
     build: .
     depends_on:
@@ -26,11 +34,14 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
     environment:
       PORT: "8080"
       GRPC_PORT: "9090"
       DATABASE_URL: "postgres://notifier:notifier@postgres:5432/release_notifier?sslmode=disable"
       REDIS_URL: "redis://redis:6379/0"
+      RABBITMQ_URL: "amqp://guest:guest@rabbitmq:5672/"
       BASE_URL: "http://frontend"
       CORS_ORIGINS: "*"
       GITHUB_TOKEN: ""

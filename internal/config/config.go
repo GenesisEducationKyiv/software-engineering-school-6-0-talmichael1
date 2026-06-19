@@ -14,6 +14,7 @@ type Config struct {
 
 	DatabaseURL string `env:"DATABASE_URL,required"`
 	RedisURL    string `env:"REDIS_URL" envDefault:"redis://localhost:6379/0"`
+	RabbitURL   string `env:"RABBITMQ_URL" envDefault:"amqp://guest:guest@localhost:5672/"`
 
 	GitHubToken string `env:"GITHUB_TOKEN"`
 

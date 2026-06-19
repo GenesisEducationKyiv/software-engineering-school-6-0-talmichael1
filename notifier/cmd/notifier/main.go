@@ -15,6 +15,7 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"github-release-notifier/notifier/internal/config"
+	"github-release-notifier/notifier/internal/dedup"
 	"github-release-notifier/notifier/internal/email"
 	"github-release-notifier/notifier/internal/logging"
 	"github-release-notifier/notifier/internal/notifier"
@@ -22,6 +23,10 @@ import (
 	"github-release-notifier/notifier/internal/tracing"
 	"github-release-notifier/notifier/internal/urls"
 )
+
+// consumerPrefetch caps in-flight unacked messages per worker channel. One keeps
+// a crashed worker from sitting on a backlog the broker can't redeliver.
+const consumerPrefetch = 1
 
 func main() {
 	if err := run(); err != nil {
@@ -53,8 +58,18 @@ func run() error {
 	}
 	defer func() { _ = rdb.Close() }()
 
+	rabbitConn, err := queue.Dial(cfg.RabbitURL)
+	if err != nil {
+		return fmt.Errorf("connecting to rabbitmq: %w", err)
+	}
+	defer func() { _ = rabbitConn.Close() }()
+
+	consume := func(ctx context.Context) (notifier.JobConsumer, error) {
+		return rabbitConn.Consumer(ctx, consumerPrefetch)
+	}
 	worker := notifier.New(
-		queue.NewNotificationQueue(rdb),
+		consume,
+		dedup.NewRedis(rdb),
 		buildMailer(cfg),
 		urls.Builder{BaseURL: cfg.BaseURL},
 		cfg.NotificationWorkers,

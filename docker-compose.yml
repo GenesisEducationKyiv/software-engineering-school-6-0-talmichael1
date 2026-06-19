@@ -11,11 +11,14 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
     environment:
       PORT: "8080"
       GRPC_PORT: "9090"
       DATABASE_URL: "postgres://notifier:notifier@postgres:5432/release_notifier?sslmode=disable"
       REDIS_URL: "redis://redis:6379/0"
+      RABBITMQ_URL: "amqp://guest:guest@rabbitmq:5672/"
       BASE_URL: "http://localhost:3000"
       MAILGUN_DOMAIN: "${MAILGUN_DOMAIN}"
       MAILGUN_API_KEY: "${MAILGUN_API_KEY}"
@@ -35,9 +38,12 @@ services:
     depends_on:
       redis:
         condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
     environment:
       METRICS_PORT: "8081"
       REDIS_URL: "redis://redis:6379/0"
+      RABBITMQ_URL: "amqp://guest:guest@rabbitmq:5672/"
       BASE_URL: "http://localhost:3000"
       MAILGUN_DOMAIN: "${MAILGUN_DOMAIN}"
       MAILGUN_API_KEY: "${MAILGUN_API_KEY}"
@@ -72,6 +78,17 @@ services:
       interval: 5s
       timeout: 3s
       retries: 5
+
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "check_port_connectivity"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
 
   jaeger:
     image: jaegertracing/all-in-one:1.54
