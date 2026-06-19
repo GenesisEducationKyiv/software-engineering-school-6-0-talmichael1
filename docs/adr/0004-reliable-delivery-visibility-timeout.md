@@ -1,6 +1,6 @@
 # ADR-0004: Надійна at-least-once доставка через reliable-чергу з visibility timeout
 
-- **Статус:** Прийнято
+- **Статус:** Прийнято; механізм замінено [ADR-0006](0006-rabbitmq-message-broker.md) (RabbitMQ)
 - **Дата:** 2026-05-26
 
 ## Контекст
