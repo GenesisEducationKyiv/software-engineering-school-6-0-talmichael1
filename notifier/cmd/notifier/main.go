@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -13,6 +14,8 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/redis/go-redis/v9"
+	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
+	"google.golang.org/grpc"
 
 	"github-release-notifier/notifier/internal/config"
 	"github-release-notifier/notifier/internal/confirm"
@@ -23,6 +26,7 @@ import (
 	"github-release-notifier/notifier/internal/queue"
 	"github-release-notifier/notifier/internal/tracing"
 	"github-release-notifier/notifier/internal/urls"
+	confirmationv1 "github-release-notifier/notifier/proto/confirmation/v1"
 )
 
 // consumerPrefetch caps in-flight unacked messages per worker channel. One keeps
@@ -77,6 +81,10 @@ func run() error {
 		cfg.NotificationWorkers,
 	)
 
+	// One Service backs both confirmation transports (ADR-0008): REST on the
+	// internal HTTP port, gRPC on its own port. HW10 benchmarks the two.
+	confirmSvc := confirm.NewService(mailer)
+
 	metricsServer := &http.Server{
 		Addr:         fmt.Sprintf(":%d", cfg.MetricsPort),
 		Handler:      metricsHandler(),
@@ -85,19 +93,22 @@ func run() error {
 	}
 	internalServer := &http.Server{
 		Addr:         fmt.Sprintf(":%d", cfg.InternalPort),
-		Handler:      internalHandler(mailer),
+		Handler:      internalHandler(confirmSvc),
 		ReadTimeout:  15 * time.Second,
 		WriteTimeout: 15 * time.Second,
 	}
+	grpcServer := grpc.NewServer(grpc.StatsHandler(otelgrpc.NewServerHandler()))
+	confirmationv1.RegisterConfirmationServiceServer(grpcServer, confirm.NewGRPCServer(confirmSvc))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	go func() { worker.Run(ctx) }()
 
-	errCh := make(chan error, 2)
+	errCh := make(chan error, 3)
 	go func() { errCh <- serve("metrics", metricsServer) }()
 	go func() { errCh <- serve("internal", internalServer) }()
+	go func() { errCh <- serveGRPC(grpcServer, cfg.GRPCPort) }()
 
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
@@ -112,6 +123,7 @@ func run() error {
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer shutdownCancel()
 
+	grpcServer.GracefulStop()
 	for name, srv := range map[string]*http.Server{"metrics": metricsServer, "internal": internalServer} {
 		if err := srv.Shutdown(shutdownCtx); err != nil {
 			slog.Error("http server shutdown error", "server", name, "error", err)
@@ -167,9 +179,9 @@ func metricsHandler() http.Handler {
 	return mux
 }
 
-func internalHandler(mailer email.Sender) http.Handler {
+func internalHandler(svc *confirm.Service) http.Handler {
 	mux := http.NewServeMux()
-	mux.Handle("/internal/confirmations", confirm.NewHandler(mailer))
+	mux.Handle("/internal/confirmations", confirm.NewHandler(svc))
 	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
@@ -180,6 +192,18 @@ func serve(name string, s *http.Server) error {
 	slog.Info("http server started", "server", name, "addr", s.Addr)
 	if err := s.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return fmt.Errorf("%s serve: %w", name, err)
+	}
+	return nil
+}
+
+func serveGRPC(g *grpc.Server, port int) error {
+	lis, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
+	if err != nil {
+		return fmt.Errorf("gRPC listen: %w", err)
+	}
+	slog.Info("gRPC confirmation server started", "port", port)
+	if err := g.Serve(lis); err != nil {
+		return fmt.Errorf("gRPC serve: %w", err)
 	}
 	return nil
 }

@@ -19,17 +19,19 @@ var (
 
 	ConfirmationEmails = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "notifier_confirmation_emails_total",
-		Help: "Total confirmation-email outcomes served over the saga endpoint (sent, failed).",
-	}, []string{"outcome"})
+		Help: "Total confirmation-email outcomes by transport (rest, grpc) and outcome (sent, failed).",
+	}, []string{"transport", "outcome"})
 )
 
-// init seeds each outcome series at zero. A CounterVec series otherwise first
-// appears already at 1, so rate() never sees the increment that created it.
+// init seeds each series at zero. A CounterVec series otherwise first appears
+// already at 1, so rate() never sees the increment that created it.
 func init() {
 	for _, outcome := range []string{"sent", "retried", "failed", "duplicate"} {
 		NotifierJobsProcessed.WithLabelValues(outcome)
 	}
-	for _, outcome := range []string{"sent", "failed"} {
-		ConfirmationEmails.WithLabelValues(outcome)
+	for _, transport := range []string{"rest", "grpc"} {
+		for _, outcome := range []string{"sent", "failed"} {
+			ConfirmationEmails.WithLabelValues(transport, outcome)
+		}
 	}
 }

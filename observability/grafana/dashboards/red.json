@@ -290,8 +290,13 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "rate(confirmation_emails_sent_total[5m])",
-          "legendFormat": "sent"
+          "expr": "sum by (transport) (rate(notifier_confirmation_emails_total{outcome=\"sent\"}[5m]))",
+          "legendFormat": "{{transport}} sent"
+        },
+        {
+          "refId": "B",
+          "expr": "sum (rate(notifier_confirmation_emails_total{outcome=\"failed\"}[5m]))",
+          "legendFormat": "failed"
         }
       ]
     }
