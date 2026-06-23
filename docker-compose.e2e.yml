@@ -36,12 +36,15 @@ services:
         condition: service_healthy
       rabbitmq:
         condition: service_healthy
+      notifier:
+        condition: service_healthy
     environment:
       PORT: "8080"
       GRPC_PORT: "9090"
       DATABASE_URL: "postgres://notifier:notifier@postgres:5432/release_notifier?sslmode=disable"
       REDIS_URL: "redis://redis:6379/0"
       RABBITMQ_URL: "amqp://guest:guest@rabbitmq:5672/"
+      NOTIFIER_URL: "http://notifier:8082"
       BASE_URL: "http://frontend"
       CORS_ORIGINS: "*"
       GITHUB_TOKEN: ""
@@ -51,6 +54,29 @@ services:
       SCAN_INTERVAL: "30m"
     healthcheck:
       test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/health"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  notifier:
+    build: ./notifier
+    depends_on:
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      METRICS_PORT: "8081"
+      INTERNAL_PORT: "8082"
+      GRPC_PORT: "9092"
+      REDIS_URL: "redis://redis:6379/0"
+      RABBITMQ_URL: "amqp://guest:guest@rabbitmq:5672/"
+      BASE_URL: "http://frontend"
+      MAILGUN_DOMAIN: ""
+      MAILGUN_API_KEY: ""
+      OTEL_ENABLED: "false"
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8081/metrics"]
       interval: 2s
       timeout: 2s
       retries: 30

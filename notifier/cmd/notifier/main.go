@@ -14,8 +14,8 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/redis/go-redis/v9"
 
-	"github-release-notifier/notifier/internal/confirm"
 	"github-release-notifier/notifier/internal/config"
+	"github-release-notifier/notifier/internal/confirm"
 	"github-release-notifier/notifier/internal/dedup"
 	"github-release-notifier/notifier/internal/email"
 	"github-release-notifier/notifier/internal/logging"

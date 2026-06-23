@@ -13,6 +13,8 @@ services:
         condition: service_healthy
       rabbitmq:
         condition: service_healthy
+      notifier:
+        condition: service_started
     environment:
       PORT: "8080"
       GRPC_PORT: "9090"
@@ -20,9 +22,7 @@ services:
       REDIS_URL: "redis://redis:6379/0"
       RABBITMQ_URL: "amqp://guest:guest@rabbitmq:5672/"
       BASE_URL: "http://localhost:3000"
-      MAILGUN_DOMAIN: "${MAILGUN_DOMAIN}"
-      MAILGUN_API_KEY: "${MAILGUN_API_KEY}"
-      MAILGUN_FROM: "${MAILGUN_FROM:-noreply@releases.app}"
+      NOTIFIER_URL: "http://notifier:8082"
       GITHUB_TOKEN: "${GITHUB_TOKEN:-}"
       API_KEY: "${API_KEY:-}"
       CORS_ORIGINS: "http://localhost:3000"

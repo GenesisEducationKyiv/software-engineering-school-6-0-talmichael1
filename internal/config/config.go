@@ -18,10 +18,9 @@ type Config struct {
 
 	GitHubToken string `env:"GITHUB_TOKEN"`
 
-	MailgunDomain  string `env:"MAILGUN_DOMAIN"`
-	MailgunAPIKey  string `env:"MAILGUN_API_KEY"`
-	MailgunFrom    string `env:"MAILGUN_FROM" envDefault:"noreply@releases.app"`
-	MailgunAPIBase string `env:"MAILGUN_API_BASE"` // e.g. https://api.eu.mailgun.net/v3
+	// NotifierURL is the base URL of the Notifier service's internal HTTP API,
+	// called by the subscribe saga to send confirmation emails (ADR-0007).
+	NotifierURL string `env:"NOTIFIER_URL" envDefault:"http://localhost:8082"`
 
 	ScanInterval time.Duration `env:"SCAN_INTERVAL" envDefault:"5m"`
 	ScanWorkers  int           `env:"SCAN_WORKERS" envDefault:"5"`
@@ -33,10 +32,6 @@ type Config struct {
 
 	Debug       bool   `env:"DEBUG" envDefault:"false"`
 	CORSOrigins string `env:"CORS_ORIGINS" envDefault:"*"`
-}
-
-func (c *Config) UseConsoleEmail() bool {
-	return c.Debug || c.MailgunDomain == "" || c.MailgunAPIKey == ""
 }
 
 func Load() (*Config, error) {

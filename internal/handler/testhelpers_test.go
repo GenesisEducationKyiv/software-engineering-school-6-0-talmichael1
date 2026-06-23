@@ -5,7 +5,6 @@ import (
 	"time"
 
 	"github-release-notifier/internal/domain"
-	"github-release-notifier/internal/email"
 )
 
 type mockSubRepoHandler struct {
@@ -76,6 +75,26 @@ func (m *mockGitHubHandler) GetLatestRelease(_ context.Context, _, _ string) (*d
 	return &domain.Release{TagName: "v1.0.0"}, nil
 }
 
-type mockEmailHandler struct{}
+type mockSagaHandler struct {
+	createSubErr error
+}
 
-func (m *mockEmailHandler) Send(_ context.Context, _ email.Message) error { return nil }
+func (m *mockSagaHandler) Create(_ context.Context, saga *domain.SubscriptionSaga) error {
+	saga.ID = "saga-1"
+	return nil
+}
+func (m *mockSagaHandler) CreateSubscription(_ context.Context, _ string, sub *domain.Subscription) error {
+	if m.createSubErr != nil {
+		return m.createSubErr
+	}
+	sub.ID = 1
+	return nil
+}
+func (m *mockSagaHandler) MarkCompleted(_ context.Context, _ string) error      { return nil }
+func (m *mockSagaHandler) MarkCompensated(_ context.Context, _, _ string) error { return nil }
+
+type mockConfirmHandler struct {
+	sendErr error
+}
+
+func (m *mockConfirmHandler) Send(_ context.Context, _, _, _ string) error { return m.sendErr }

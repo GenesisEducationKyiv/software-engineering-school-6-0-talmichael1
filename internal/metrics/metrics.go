@@ -33,11 +33,6 @@ var (
 		Help: "Total notifications enqueued for delivery.",
 	})
 
-	ConfirmationEmailsSent = promauto.NewCounter(prometheus.CounterOpts{
-		Name: "confirmation_emails_sent_total",
-		Help: "Total subscription confirmation emails successfully sent.",
-	})
-
 	ScannerRuns = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "scanner_runs_total",
 		Help: "Total scanner scan cycles.",
