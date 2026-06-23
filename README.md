@@ -22,6 +22,7 @@ The application is split into two deployables that communicate over a RabbitMQ q
 **Notifier service** (`notifier/`) — the delivery domain, a standalone module:
 
 - **Notifier** — Worker pool that consumes the RabbitMQ `notifications` queue and sends emails (at-least-once, see below). It depends only on RabbitMQ (queue), Redis (send-dedup) and the email backend — no database — so it scales independently of the API
+- **Confirmation participant** — A synchronous endpoint that sends subscription confirmation emails for the subscribe saga, exposed over **both** a REST endpoint and a gRPC server backed by the same logic ([ADR-0007](docs/adr/0007-orchestrated-saga-subscribe.md), [ADR-0008](docs/adr/0008-grpc-confirmation-transport.md))
 
 The scanner produces `NotificationJob`s onto the RabbitMQ `notifications` queue; the notifier service consumes them. The JSON job shape is the contract between the two.
 
@@ -56,9 +57,31 @@ Each subscription generates two `crypto/rand` tokens (32 bytes, hex-encoded):
 
 Unconfirmed subscriptions never trigger notifications. A background cleanup worker removes unconfirmed subscriptions older than 1 hour (runs every 30 minutes) to prevent database bloat from abandoned signups.
 
-### Why rollback on email failure?
+### How subscribe works (an orchestrated saga)
 
-If the confirmation email fails to send (Mailgun down, invalid domain, etc.), the subscription is immediately deleted. Without this, the user would get a 500 error and a retry would return 409 (conflict) — a dead end. The rollback allows clean retries.
+Subscribe is an **orchestrated saga** across both services ([ADR-0007](docs/adr/0007-orchestrated-saga-subscribe.md)): the API orchestrates, the Notifier participates.
+
+1. **Step 1** — create the unconfirmed subscription (Postgres).
+2. **Step 2** — ask the Notifier to send the confirmation email (a synchronous cross-service call).
+
+If step 2 fails (Notifier down, email backend error, timeout), the orchestrator **compensates** by deleting the subscription — otherwise the user would get a 500 and a retry would dead-end on 409 (conflict). Saga state is persisted in a `subscription_sagas` table, so an interrupted run (process crash mid-flight) is recovered by the cleanup worker via forward-recovery with a retry cap.
+
+### Confirmation step: REST vs gRPC
+
+Step 2 is the one synchronous inter-service RPC, so it's where we compare transports ([ADR-0008](docs/adr/0008-grpc-confirmation-transport.md)). Both implementations sit behind one `ConfirmationSender` interface, selected by `CONFIRMATION_TRANSPORT` (`grpc` default, or `rest`); the `.proto` contract is generated with `buf`.
+
+Fair local comparison via a single Go harness that drives both transports identically (`make bench-confirmation`) — same machine, connection reuse on both, no-op email backend; Apple M3 Pro, 50 workers, 200k requests each:
+
+| Metric | REST (HTTP/1.1 + JSON) | gRPC (HTTP/2 + protobuf) |
+|---|---|---|
+| Throughput | ~100–127k req/s | ~123–132k req/s |
+| p50 latency | ~290–340 µs | ~330–350 µs |
+| p99 latency | ~1.5–2.1 ms | **~0.95–1.05 ms** |
+| Bytes/request | **342 B** | **133 B** (~2.6× less) |
+
+**What we got:** on localhost with a tiny unary call, raw **throughput is a wash** — Go's `net/http` with keep-alive is extremely fast, and HTTP/2 framing overhead offsets multiplexing for such small messages. gRPC's real, repeatable wins are **bandwidth** (protobuf encodes fields by number instead of repeating JSON key names, and HPACK compresses HTTP/2 headers — ~2.6× fewer bytes, a gap that *widens* with larger payloads) and a **tighter p99 tail** (one multiplexed connection vs an HTTP/1.1 pool), plus a typed schema-first contract. We default to gRPC for those and keep REST alongside for fallback.
+
+> A first attempt compared `ghz` (gRPC) against `autocannon` (REST) and suggested REST was ~25% faster — but that measured two different tools (different languages; autocannon rounds latency to 1 ms) more than two protocols. The table above comes from one in-process harness; see [ADR-0008](docs/adr/0008-grpc-confirmation-transport.md).
 
 ### GitHub rate limit strategy
 

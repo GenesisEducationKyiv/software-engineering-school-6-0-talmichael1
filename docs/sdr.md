@@ -2,7 +2,7 @@
 
 - **Статус:** Прийнято
 - **Дата:** 2026-06-23
-- **Повʼязані ADR:** [0001](adr/0001-cache-github-client.md), [0002](adr/0002-concurrent-notifier-workers.md), [0003](adr/0003-consumer-defined-interfaces.md), [0004](adr/0004-reliable-delivery-visibility-timeout.md), [0005](adr/0005-extract-notifier-microservice.md), [0006](adr/0006-rabbitmq-message-broker.md), [0007](adr/0007-orchestrated-saga-subscribe.md)
+- **Повʼязані ADR:** [0001](adr/0001-cache-github-client.md), [0002](adr/0002-concurrent-notifier-workers.md), [0003](adr/0003-consumer-defined-interfaces.md), [0004](adr/0004-reliable-delivery-visibility-timeout.md), [0005](adr/0005-extract-notifier-microservice.md), [0006](adr/0006-rabbitmq-message-broker.md), [0007](adr/0007-orchestrated-saga-subscribe.md), [0008](adr/0008-grpc-confirmation-transport.md)
 
 ## Контекст і ціль
 
@@ -37,9 +37,10 @@ GitHub-репозиторіїв. Коли в обраному репо зʼяв�
 - **Notifier** — пул воркерів, що консюмить чергу `notifications` (manual ack) і
   шле листи через Mailgun (ADR-0002, ADR-0006). Залежить лише від RabbitMQ, Redis
   (дедуп) і email-бекенду — без БД, тож масштабується незалежно від API.
-- **Confirmation endpoint** — синхронний `POST /internal/confirmations`: учасник
-  саги підписки (ADR-0007), рендерить і шле лист-підтвердження. Зараз REST; у HW10
-  поряд стане gRPC.
+- **Confirmation participant** — синхронний учасник саги підписки (ADR-0007), що
+  рендерить і шле лист-підтвердження. Доступний за **двома транспортами** —
+  REST (`POST /internal/confirmations`) і gRPC (`ConfirmationService`), за спільною
+  логікою; оркестратор за замовчуванням ходить gRPC (ADR-0008).
 
 Продюсер (API + сканер) кладе `NotificationJob` у чергу `notifications`, Notifier їх
 забирає. JSON-форма завдання — контракт між сервісами.
@@ -74,8 +75,8 @@ Postgres (`subscription_sagas`).
 1. Оркестратор створює рядок саги `pending` (журнал на випадок краху).
 2. **Крок 1:** створити непідтверджену підписку в Postgres; рядок саги отримує
    `subscription_id` у **тій самій транзакції** (журнал і підписка атомарно узгоджені).
-3. **Крок 2:** синхронний REST-виклик `POST /internal/confirmations` Notifier-а →
-   рендер і відправка листа-підтвердження.
+3. **Крок 2:** синхронний виклик Notifier-а (gRPC за замовчуванням, REST як
+   альтернатива за тим самим інтерфейсом — ADR-0008) → рендер і відправка листа.
 4. Успіх → сага `completed`. Невдача кроку 2 (не-2xx/таймаут) → компенсація кроку 1
    (видалити підписку), сага `compensated`, користувачу — помилка (чистий ретрай).
 5. **Відновлення:** краш між кроками лишає сагу `pending`. Cleanup-реапер робить
@@ -114,6 +115,9 @@ Postgres (`subscription_sagas`).
 - **Оркестрована Saga для підписки** — створення підписки (API/Postgres) +
   лист-підтвердження (Notifier) як розподілена транзакція з persistent-журналом і
   компенсацією; замінює локальний rollback (ADR-0007).
+- **gRPC для кроку 2 саги** — міжсервісний виклик підтвердження мігровано з REST на
+  gRPC (контракт у `.proto`, генерація через buf); REST лишається за тим самим
+  інтерфейсом. Виграш — менший трафік і коротший p99, не сирий throughput (ADR-0008).
 
 ## Ризики і компроміси
 
