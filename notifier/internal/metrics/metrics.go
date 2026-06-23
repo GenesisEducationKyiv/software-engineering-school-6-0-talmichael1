@@ -16,6 +16,11 @@ var (
 		Help:    "Duration of notifier job processing in seconds.",
 		Buckets: prometheus.DefBuckets,
 	})
+
+	ConfirmationEmails = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "notifier_confirmation_emails_total",
+		Help: "Total confirmation-email outcomes served over the saga endpoint (sent, failed).",
+	}, []string{"outcome"})
 )
 
 // init seeds each outcome series at zero. A CounterVec series otherwise first
@@ -23,5 +28,8 @@ var (
 func init() {
 	for _, outcome := range []string{"sent", "retried", "failed", "duplicate"} {
 		NotifierJobsProcessed.WithLabelValues(outcome)
+	}
+	for _, outcome := range []string{"sent", "failed"} {
+		ConfirmationEmails.WithLabelValues(outcome)
 	}
 }

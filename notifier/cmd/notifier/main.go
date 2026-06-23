@@ -14,6 +14,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/redis/go-redis/v9"
 
+	"github-release-notifier/notifier/internal/confirm"
 	"github-release-notifier/notifier/internal/config"
 	"github-release-notifier/notifier/internal/dedup"
 	"github-release-notifier/notifier/internal/email"
@@ -67,10 +68,11 @@ func run() error {
 	consume := func(ctx context.Context) (notifier.JobConsumer, error) {
 		return rabbitConn.Consumer(ctx, consumerPrefetch)
 	}
+	mailer := buildMailer(cfg)
 	worker := notifier.New(
 		consume,
 		dedup.NewRedis(rdb),
-		buildMailer(cfg),
+		mailer,
 		urls.Builder{BaseURL: cfg.BaseURL},
 		cfg.NotificationWorkers,
 	)
@@ -81,14 +83,21 @@ func run() error {
 		ReadTimeout:  15 * time.Second,
 		WriteTimeout: 15 * time.Second,
 	}
+	internalServer := &http.Server{
+		Addr:         fmt.Sprintf(":%d", cfg.InternalPort),
+		Handler:      internalHandler(mailer),
+		ReadTimeout:  15 * time.Second,
+		WriteTimeout: 15 * time.Second,
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	go func() { worker.Run(ctx) }()
 
-	errCh := make(chan error, 1)
-	go func() { errCh <- serveMetrics(metricsServer) }()
+	errCh := make(chan error, 2)
+	go func() { errCh <- serve("metrics", metricsServer) }()
+	go func() { errCh <- serve("internal", internalServer) }()
 
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
@@ -97,14 +106,16 @@ func run() error {
 	case <-quit:
 		slog.Info("shutting down...")
 	case err := <-errCh:
-		slog.Error("metrics server failed, shutting down", "error", err)
+		slog.Error("http server failed, shutting down", "error", err)
 	}
 	cancel()
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer shutdownCancel()
 
-	if err := metricsServer.Shutdown(shutdownCtx); err != nil {
-		slog.Error("metrics server shutdown error", "error", err)
+	for name, srv := range map[string]*http.Server{"metrics": metricsServer, "internal": internalServer} {
+		if err := srv.Shutdown(shutdownCtx); err != nil {
+			slog.Error("http server shutdown error", "server", name, "error", err)
+		}
 	}
 	slog.Info("shutdown complete")
 	return nil
@@ -156,10 +167,19 @@ func metricsHandler() http.Handler {
 	return mux
 }
 
-func serveMetrics(s *http.Server) error {
-	slog.Info("metrics server started", "addr", s.Addr)
+func internalHandler(mailer email.Sender) http.Handler {
+	mux := http.NewServeMux()
+	mux.Handle("/internal/confirmations", confirm.NewHandler(mailer))
+	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	return mux
+}
+
+func serve(name string, s *http.Server) error {
+	slog.Info("http server started", "server", name, "addr", s.Addr)
 	if err := s.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		return fmt.Errorf("metrics serve: %w", err)
+		return fmt.Errorf("%s serve: %w", name, err)
 	}
 	return nil
 }
