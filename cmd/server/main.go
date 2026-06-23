@@ -209,7 +209,7 @@ func buildServices(cfg *config.Config, db *sqlx.DB, rdb *redis.Client, rabbitPub
 
 	subscriptionSvc := service.NewSubscriptionService(subStore, repoStore, cachedGH, sagaStore, confirmer, urlBuilder)
 	scanner := service.NewScanner(repoStore, subStore, cachedGH, notifQueue, repoCheckQueue, scanLock, cfg.ScanInterval, cfg.ScanWorkers)
-	cleanup := service.NewCleanup(subStore)
+	cleanup := service.NewCleanup(subStore, sagaStore, confirmer, urlBuilder)
 	return subscriptionSvc, scanner, cleanup
 }
 
