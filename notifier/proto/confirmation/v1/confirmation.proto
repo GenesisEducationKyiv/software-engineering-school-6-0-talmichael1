@@ -1,0 +1,23 @@
+syntax = "proto3";
+
+package confirmation.v1;
+
+option go_package = "github-release-notifier/notifier/proto/confirmation/v1;confirmationv1";
+
+// ConfirmationService sends subscription confirmation emails on behalf of the
+// subscribe-saga orchestrator. It is the gRPC sibling of the REST
+// POST /internal/confirmations endpoint (ADR-0007, ADR-0008).
+service ConfirmationService {
+  // SendConfirmation renders and sends one confirmation email. It returns
+  // OK on success and a non-OK status (e.g. UNAVAILABLE) when the email
+  // backend fails, so the orchestrator can compensate.
+  rpc SendConfirmation(SendConfirmationRequest) returns (SendConfirmationResponse);
+}
+
+message SendConfirmationRequest {
+  string email = 1;
+  string repo = 2;
+  string confirm_url = 3;
+}
+
+message SendConfirmationResponse {}

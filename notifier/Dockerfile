@@ -15,6 +15,6 @@ RUN apk add --no-cache ca-certificates tzdata
 
 COPY --from=builder /notifier /notifier
 
-EXPOSE 8081
+EXPOSE 8081 8082 9092
 
 CMD ["/notifier"]

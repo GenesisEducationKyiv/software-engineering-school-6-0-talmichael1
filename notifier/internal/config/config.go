@@ -9,6 +9,7 @@ import (
 type Config struct {
 	MetricsPort  int    `env:"METRICS_PORT" envDefault:"8081"`
 	InternalPort int    `env:"INTERNAL_PORT" envDefault:"8082"`
+	GRPCPort     int    `env:"GRPC_PORT" envDefault:"9092"`
 	BaseURL      string `env:"BASE_URL" envDefault:"http://localhost:8080"`
 
 	RedisURL  string `env:"REDIS_URL" envDefault:"redis://localhost:6379/0"`

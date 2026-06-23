@@ -35,7 +35,7 @@ func post(t *testing.T, h http.Handler, body string) *httptest.ResponseRecorder 
 
 func TestHandlerSendsConfirmation(t *testing.T) {
 	sender := &fakeSender{}
-	h := NewHandler(sender)
+	h := NewHandler(NewService(sender))
 
 	rec := post(t, h, `{"email":"user@example.com","repo":"golang/go","confirm_url":"https://x/confirm?t=abc"}`)
 
@@ -59,7 +59,7 @@ func TestHandlerSendsConfirmation(t *testing.T) {
 
 func TestHandlerRejectsBadJSON(t *testing.T) {
 	sender := &fakeSender{}
-	rec := post(t, NewHandler(sender), `{not json`)
+	rec := post(t, NewHandler(NewService(sender)), `{not json`)
 
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400", rec.Code)
@@ -78,7 +78,7 @@ func TestHandlerRejectsMissingFields(t *testing.T) {
 	for name, body := range cases {
 		t.Run(name, func(t *testing.T) {
 			sender := &fakeSender{}
-			rec := post(t, NewHandler(sender), body)
+			rec := post(t, NewHandler(NewService(sender)), body)
 			if rec.Code != http.StatusBadRequest {
 				t.Fatalf("status = %d, want 400", rec.Code)
 			}
@@ -91,7 +91,7 @@ func TestHandlerRejectsMissingFields(t *testing.T) {
 
 func TestHandlerReportsSendFailure(t *testing.T) {
 	sender := &fakeSender{err: errors.New("mailgun down")}
-	rec := post(t, NewHandler(sender), `{"email":"u@e.com","repo":"golang/go","confirm_url":"https://x"}`)
+	rec := post(t, NewHandler(NewService(sender)), `{"email":"u@e.com","repo":"golang/go","confirm_url":"https://x"}`)
 
 	if rec.Code != http.StatusBadGateway {
 		t.Fatalf("status = %d, want 502", rec.Code)
@@ -101,7 +101,7 @@ func TestHandlerReportsSendFailure(t *testing.T) {
 func TestHandlerRejectsNonPost(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/internal/confirmations", nil)
 	rec := httptest.NewRecorder()
-	NewHandler(&fakeSender{}).ServeHTTP(rec, req)
+	NewHandler(NewService(&fakeSender{})).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("status = %d, want 405", rec.Code)
