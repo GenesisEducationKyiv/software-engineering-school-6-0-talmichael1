@@ -1,6 +1,10 @@
-# The notifier is a separate module with its own image (notifier/Dockerfile);
-# it is not part of the API monolith build context.
-notifier/
+# The Notifier ships as its own image (notifier/Dockerfile), but the API now
+# imports its proto contract via a local module replace (ADR-0008), so the
+# Notifier's go.mod/go.sum and proto package must stay in the build context.
+# Its server-only code is never compiled into the API and is excluded.
+notifier/cmd/
+notifier/internal/
+notifier/Dockerfile
 
 bin/
 .git/

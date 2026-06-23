@@ -22,8 +22,10 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/redis/go-redis/v9"
 	"go.opentelemetry.io/contrib/instrumentation/github.com/gin-gonic/gin/otelgin"
+	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	semconv "go.opentelemetry.io/otel/semconv/v1.24.0"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 
 	"github-release-notifier/internal/cache"
 	"github-release-notifier/internal/config"
@@ -100,7 +102,13 @@ func run() error {
 	}
 	defer func() { _ = rabbitSub.Close() }()
 
-	subscriptionSvc, scanner, cleanup := buildServices(cfg, db, rdb, rabbitPub, rabbitSub)
+	confirmer, closeConfirmer, err := buildConfirmer(cfg)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = closeConfirmer() }()
+
+	subscriptionSvc, scanner, cleanup := buildServices(cfg, db, rdb, rabbitPub, rabbitSub, confirmer)
 
 	router := buildRouter(cfg, subscriptionSvc)
 	httpServer := &http.Server{
@@ -189,7 +197,30 @@ func connectRedis(rawURL string) (*redis.Client, error) {
 	return rdb, nil
 }
 
-func buildServices(cfg *config.Config, db *sqlx.DB, rdb *redis.Client, rabbitPub, rabbitSub *queue.Connection) (
+// buildConfirmer wires the saga's step-2 transport from config. REST and gRPC
+// satisfy the same ConfirmationSender contract (ADR-0008); the returned closer
+// releases the gRPC connection (a no-op for REST).
+func buildConfirmer(cfg *config.Config) (service.ConfirmationSender, func() error, error) {
+	switch cfg.ConfirmationTransport {
+	case "grpc":
+		conn, err := grpc.NewClient(cfg.NotifierGRPCAddr,
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithStatsHandler(otelgrpc.NewClientHandler()),
+		)
+		if err != nil {
+			return nil, nil, fmt.Errorf("dialing notifier gRPC: %w", err)
+		}
+		slog.Info("confirmation transport: grpc", "addr", cfg.NotifierGRPCAddr)
+		return confirmation.NewGRPCClient(conn, confirmationTimeout), conn.Close, nil
+	case "rest":
+		slog.Info("confirmation transport: rest", "url", cfg.NotifierURL)
+		return confirmation.NewRESTClient(cfg.NotifierURL, confirmationTimeout), func() error { return nil }, nil
+	default:
+		return nil, nil, fmt.Errorf("unknown CONFIRMATION_TRANSPORT %q (want grpc or rest)", cfg.ConfirmationTransport)
+	}
+}
+
+func buildServices(cfg *config.Config, db *sqlx.DB, rdb *redis.Client, rabbitPub, rabbitSub *queue.Connection, confirmer service.ConfirmationSender) (
 	*service.SubscriptionService, *service.Scanner, *service.Cleanup,
 ) {
 	repoStore := postgres.NewRepositoryStore(db)
@@ -198,9 +229,6 @@ func buildServices(cfg *config.Config, db *sqlx.DB, rdb *redis.Client, rabbitPub
 
 	gh := ghclient.NewClient(cfg.GitHubToken)
 	cachedGH := cache.NewCachedGitHubClient(gh, rdb)
-
-	confirmer := confirmation.NewRESTClient(cfg.NotifierURL, confirmationTimeout)
-	slog.Info("confirmation emails routed to notifier", "url", cfg.NotifierURL)
 
 	notifQueue := queue.NewNotificationQueue(rabbitPub.NotificationPublisher())
 	repoCheckQueue := queue.NewRepoCheckQueue(rabbitPub.RepoCheckPublisher(), rabbitSub, cfg.ScanWorkers)

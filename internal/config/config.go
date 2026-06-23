@@ -18,9 +18,13 @@ type Config struct {
 
 	GitHubToken string `env:"GITHUB_TOKEN"`
 
-	// NotifierURL is the base URL of the Notifier service's internal HTTP API,
-	// called by the subscribe saga to send confirmation emails (ADR-0007).
-	NotifierURL string `env:"NOTIFIER_URL" envDefault:"http://localhost:8082"`
+	// Confirmation transport for the subscribe saga's step 2 (ADR-0008).
+	// "grpc" (default) or "rest"; both are kept side by side for comparison.
+	ConfirmationTransport string `env:"CONFIRMATION_TRANSPORT" envDefault:"grpc"`
+	// NotifierURL is the base URL of the Notifier's internal HTTP API (REST
+	// transport); NotifierGRPCAddr is its gRPC address (ADR-0007, ADR-0008).
+	NotifierURL      string `env:"NOTIFIER_URL" envDefault:"http://localhost:8082"`
+	NotifierGRPCAddr string `env:"NOTIFIER_GRPC_ADDR" envDefault:"localhost:9092"`
 
 	ScanInterval time.Duration `env:"SCAN_INTERVAL" envDefault:"5m"`
 	ScanWorkers  int           `env:"SCAN_WORKERS" envDefault:"5"`

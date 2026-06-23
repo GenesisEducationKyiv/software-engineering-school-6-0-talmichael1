@@ -22,7 +22,9 @@ services:
       REDIS_URL: "redis://redis:6379/0"
       RABBITMQ_URL: "amqp://guest:guest@rabbitmq:5672/"
       BASE_URL: "http://localhost:3000"
+      CONFIRMATION_TRANSPORT: "grpc"
       NOTIFIER_URL: "http://notifier:8082"
+      NOTIFIER_GRPC_ADDR: "notifier:9092"
       GITHUB_TOKEN: "${GITHUB_TOKEN:-}"
       API_KEY: "${API_KEY:-}"
       CORS_ORIGINS: "http://localhost:3000"
@@ -42,9 +44,11 @@ services:
         condition: service_healthy
     ports:
       - "8082:8082"
+      - "9092:9092"
     environment:
       METRICS_PORT: "8081"
       INTERNAL_PORT: "8082"
+      GRPC_PORT: "9092"
       REDIS_URL: "redis://redis:6379/0"
       RABBITMQ_URL: "amqp://guest:guest@rabbitmq:5672/"
       BASE_URL: "http://localhost:3000"
