@@ -3,6 +3,9 @@ FROM golang:1.25-alpine AS builder
 WORKDIR /app
 
 COPY go.mod go.sum ./
+# The API imports the Notifier's confirmation proto contract via a local replace
+# (ADR-0008); its go.mod must be present for module resolution before download.
+COPY notifier/go.mod notifier/go.sum ./notifier/
 RUN go mod download
 
 COPY . .
