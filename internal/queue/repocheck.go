@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"sync"
 	"time"
 
@@ -42,6 +43,9 @@ func (q *RepoCheckQueue) EnqueueRepo(ctx context.Context, repo domain.Repository
 	return q.pub.PublishWithContext(ctx, "", repoChecksQueue, false, false, amqp.Publishing{
 		ContentType: "application/json",
 		Body:        data,
+		Headers: amqp.Table{
+			deduplicationHeader: strconv.FormatInt(repo.ID, 10),
+		},
 	})
 }
 

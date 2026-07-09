@@ -28,6 +28,9 @@ func TestEnqueueRepo_PublishesToRepoChecks(t *testing.T) {
 	if pub.keys[0] != repoChecksQueue {
 		t.Fatalf("routing key = %q, want %q", pub.keys[0], repoChecksQueue)
 	}
+	if h := pub.published[0].Headers[deduplicationHeader]; h != "42" {
+		t.Fatalf("dedup header = %v, want %q — duplicate checks for one repo would fan out twice", h, "42")
+	}
 	var got domain.Repository
 	if err := json.Unmarshal(pub.published[0].Body, &got); err != nil {
 		t.Fatalf("body is not a valid repo: %v", err)
