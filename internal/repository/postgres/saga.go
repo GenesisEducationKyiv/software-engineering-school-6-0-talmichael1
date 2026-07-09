@@ -33,7 +33,9 @@ func (s *SagaStore) Create(ctx context.Context, saga *domain.SubscriptionSaga) e
 // CreateSubscription runs step 1 atomically: it inserts the subscription and
 // records its id on the saga in one transaction, so the saga log and the
 // subscription are never out of sync. Returns domain.ErrConflict on a duplicate
-// (email, repo) subscription.
+// (email, repo) subscription, or domain.ErrNotFound if the saga id no longer
+// exists — the whole transaction rolls back rather than leaving an orphaned
+// subscription with no saga to drive or compensate it.
 func (s *SagaStore) CreateSubscription(ctx context.Context, sagaID string, sub *domain.Subscription) error {
 	tx, err := s.db.BeginTxx(ctx, nil)
 	if err != nil {
@@ -44,10 +46,18 @@ func (s *SagaStore) CreateSubscription(ctx context.Context, sagaID string, sub *
 	if err := insertSubscription(ctx, tx, sub); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx,
+	res, err := tx.ExecContext(ctx,
 		`UPDATE subscription_sagas SET subscription_id = $1, updated_at = NOW() WHERE id = $2`,
-		sub.ID, sagaID); err != nil {
+		sub.ID, sagaID)
+	if err != nil {
 		return err
+	}
+	attached, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if attached == 0 {
+		return domain.ErrNotFound
 	}
 	return tx.Commit()
 }
