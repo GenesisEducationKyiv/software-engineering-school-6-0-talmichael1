@@ -1,4 +1,4 @@
-FROM mcr.microsoft.com/playwright:v1.49.1-jammy
+FROM mcr.microsoft.com/playwright:v1.61.1-jammy
 
 COPY --from=golang:1.25 /usr/local/go /usr/local/go
 ENV PATH="/usr/local/go/bin:${PATH}" \

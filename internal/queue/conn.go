@@ -11,8 +11,12 @@ import (
 )
 
 const (
-	notificationsQueue = "notifications"
-	repoChecksQueue    = "repo_checks"
+	notificationsQueue  = "notifications"
+	repoChecksQueue     = "repo_checks"
+	deduplicationHeader = "x-deduplication-header"
+
+	repoCheckDedupTTL       = 5 * time.Minute
+	repoCheckDedupCacheSize = 10000
 )
 
 const (
@@ -151,7 +155,11 @@ func declareNotifications(ch *amqp.Channel) error {
 // is enough — repo checks are auto-acked and lossy by design (a dropped check is
 // re-enqueued next scan cycle), so they need neither quorum nor persistence.
 func declareRepoChecks(ch *amqp.Channel) error {
-	_, err := ch.QueueDeclare(repoChecksQueue, true, false, false, false, nil)
+	_, err := ch.QueueDeclare(repoChecksQueue, true, false, false, false, amqp.Table{
+		"x-message-deduplication": true,
+		"x-cache-size":            int32(repoCheckDedupCacheSize),
+		"x-cache-ttl":             int32(repoCheckDedupTTL.Milliseconds()),
+	})
 	if err != nil {
 		return fmt.Errorf("declaring %q queue: %w", repoChecksQueue, err)
 	}
