@@ -37,8 +37,8 @@ A broker is purpose-built for this: O(1) enqueue/dequeue, competing consumers, a
 
 ### How the scan → notify pipeline works
 
-1. Once per `SCAN_INTERVAL`, a single **leader** instance (claimed via Redis `SET NX EX`) fetches all repositories with at least one **confirmed** subscriber (a single SQL JOIN) and pushes each onto a `repocheck` Redis queue. Non-leader instances skip the tick — no duplicate enqueues or races on the tag update
-2. Worker pools across all instances drain `repocheck` (`SCAN_WORKERS`, default 5) — scan work is distributed, and any replica is interchangeable. The queue is lossy by design: a dropped repo is simply re-checked next cycle
+1. Once per `SCAN_INTERVAL`, a single **leader** instance (claimed via Redis `SET NX EX`) fetches all repositories with at least one **confirmed** subscriber (a single SQL JOIN) and publishes each onto the RabbitMQ `repo_checks` queue. Non-leader instances skip the tick — no duplicate enqueues or races on the tag update
+2. Worker pools across all instances drain `repo_checks` (`SCAN_WORKERS`, default 5) — scan work is distributed, and any replica is interchangeable. Consumption is auto-ack and lossy by design: a dropped repo is simply re-checked next cycle
 3. Each worker calls `GetLatestRelease` via the cached GitHub client (Redis, 10min TTL). 10,000 subscribers to `golang/go` = **1 GitHub API call**, not 10,000
 4. If `release.TagName != repo.LastSeenTag`, it builds a `NotificationJob` per subscriber and publishes one persistent message per subscriber to the RabbitMQ `notifications` queue
 5. `last_seen_tag` in PostgreSQL is updated **only after** successful enqueue — this guarantees at-least-once delivery. If the process crashes between enqueue and tag update, the next scan re-detects the release
@@ -70,7 +70,7 @@ Without a `GITHUB_TOKEN`, the limit is 60 requests/hour. With a token (any GitHu
 
 - **PostgreSQL**: 18 max connections, 8 idle (Heroku essential-0 allows 20 — we leave headroom for migrations and admin tools)
 - **Redis**: Pool of 15 connections, 5 kept idle (cache, leader lock, and notifier send-dedup)
-- **RabbitMQ**: one long-lived connection per service; concurrency comes from channels (one consume channel per notifier worker), with automatic reconnect on drop
+- **RabbitMQ**: long-lived connections (the producer keeps two — publish and consume — so publisher flow control can't stall the repo-check consumer; the notifier keeps one). Concurrency comes from channels (one consume channel per notifier worker), with automatic reconnect on drop
 
 ## Tech Stack
 
@@ -202,7 +202,7 @@ All configuration is done via environment variables:
 │   ├── github/          # GitHub API client with rate limit handling
 │   ├── cache/           # Redis caching layer for GitHub responses
 │   ├── email/           # Mailgun sender + console backend (confirmation emails)
-│   ├── queue/           # RabbitMQ notification producer + Redis repo-check queue
+│   ├── queue/           # RabbitMQ notification producer + repo-check work queue
 │   ├── lock/            # Redis leader lock (scanner singleton election)
 │   ├── grpc/            # gRPC server and protobuf definitions
 │   └── tracing/         # OpenTelemetry setup
@@ -235,6 +235,7 @@ DATABASE_URL="postgres://user:pass@localhost:5432/test_db?sslmode=disable" \
 - **Notifier** — job processing, two-phase deduplication, nack-requeue on send failure, max-retries drop, ack on terminal states, nack-for-recovery when outcome unknown, dedup check errors, mark-sent errors
 - **Leader lock** — acquire, contention while held, re-acquire after expiry
 - **Notification queue** (RabbitMQ) — persistent publish of each job, x-delivery-count parsing, poison-message drop, ack, nack-requeue, closed-channel and cancellation handling
+- **Repo-check queue** (RabbitMQ) — publish to `repo_checks`, dequeue round-trip, empty-timeout, closed-channel and cancellation handling
 - **Send dedup** (Redis) — mark with TTL, is-sent before/after, key scoping by subscription and tag
 - **Cleanup** — stale subscription deletion, error handling
 - **GitHub client** — rate limit header parsing, 429 retry, auth header, response decoding

@@ -82,13 +82,21 @@ func run() error {
 	}
 	defer func() { _ = rdb.Close() }()
 
-	rabbitConn, err := queue.Dial(cfg.RabbitURL)
+	// Separate connections for publishing and consuming so publisher flow
+	// control can't stall the repo-check consumer — see ADR-0006.
+	rabbitPub, err := queue.Dial(cfg.RabbitURL)
 	if err != nil {
-		return fmt.Errorf("connecting to rabbitmq: %w", err)
+		return fmt.Errorf("connecting to rabbitmq (publish): %w", err)
 	}
-	defer func() { _ = rabbitConn.Close() }()
+	defer func() { _ = rabbitPub.Close() }()
 
-	subscriptionSvc, scanner, cleanup := buildServices(cfg, db, rdb, rabbitConn)
+	rabbitSub, err := queue.Dial(cfg.RabbitURL)
+	if err != nil {
+		return fmt.Errorf("connecting to rabbitmq (consume): %w", err)
+	}
+	defer func() { _ = rabbitSub.Close() }()
+
+	subscriptionSvc, scanner, cleanup := buildServices(cfg, db, rdb, rabbitPub, rabbitSub)
 
 	router := buildRouter(cfg, subscriptionSvc)
 	httpServer := &http.Server{
@@ -177,7 +185,7 @@ func connectRedis(rawURL string) (*redis.Client, error) {
 	return rdb, nil
 }
 
-func buildServices(cfg *config.Config, db *sqlx.DB, rdb *redis.Client, rabbitConn *queue.Connection) (
+func buildServices(cfg *config.Config, db *sqlx.DB, rdb *redis.Client, rabbitPub, rabbitSub *queue.Connection) (
 	*service.SubscriptionService, *service.Scanner, *service.Cleanup,
 ) {
 	repoStore := postgres.NewRepositoryStore(db)
@@ -195,8 +203,8 @@ func buildServices(cfg *config.Config, db *sqlx.DB, rdb *redis.Client, rabbitCon
 		mailer = email.NewMailgunSender(cfg.MailgunDomain, cfg.MailgunAPIKey, cfg.MailgunFrom, cfg.MailgunAPIBase)
 	}
 
-	notifQueue := queue.NewNotificationQueue(rabbitConn.NotificationPublisher())
-	repoCheckQueue := queue.NewRepoCheckQueue(rdb)
+	notifQueue := queue.NewNotificationQueue(rabbitPub.NotificationPublisher())
+	repoCheckQueue := queue.NewRepoCheckQueue(rabbitPub.RepoCheckPublisher(), rabbitSub, cfg.ScanWorkers)
 	scanLock := lock.NewRedisLock(rdb)
 	urlBuilder := urls.Builder{BaseURL: cfg.BaseURL}
 
