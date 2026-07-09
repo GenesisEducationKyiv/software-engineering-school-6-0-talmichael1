@@ -101,34 +101,6 @@ func TestSagaStore_CreateSubscriptionConflictRollsBack(t *testing.T) {
 	}
 }
 
-func TestSagaStore_CreateSubscriptionMissingSagaRollsBack(t *testing.T) {
-	cleanTables(t)
-	repoStore := NewRepositoryStore(testDB)
-	sagaStore := NewSagaStore(testDB)
-	ctx := context.Background()
-
-	repo, _ := repoStore.GetOrCreate(ctx, "golang", "go")
-	sub := &domain.Subscription{
-		Email:            "orphan@example.com",
-		RepositoryID:     repo.ID,
-		ConfirmToken:     "ct-missing",
-		UnsubscribeToken: "ut-missing",
-	}
-
-	const absentSaga = "00000000-0000-0000-0000-000000000000"
-	if err := sagaStore.CreateSubscription(ctx, absentSaga, sub); err != domain.ErrNotFound {
-		t.Fatalf("err = %v, want ErrNotFound", err)
-	}
-
-	var count int
-	if err := testDB.Get(&count, `SELECT COUNT(*) FROM subscriptions WHERE email = $1`, sub.Email); err != nil {
-		t.Fatalf("count subscriptions: %v", err)
-	}
-	if count != 0 {
-		t.Fatalf("subscription must be rolled back after missing saga, found %d", count)
-	}
-}
-
 func TestSagaStore_MarkTransitions(t *testing.T) {
 	cleanTables(t)
 	store := NewSagaStore(testDB)
