@@ -52,6 +52,7 @@ func TestMain(m *testing.M) {
 
 	code := m.Run()
 
+	testDB.Exec("DELETE FROM subscription_sagas")
 	testDB.Exec("DELETE FROM subscriptions")
 	testDB.Exec("DELETE FROM repositories")
 
@@ -60,6 +61,7 @@ func TestMain(m *testing.M) {
 
 func cleanTables(t *testing.T) {
 	t.Helper()
+	testDB.Exec("DELETE FROM subscription_sagas")
 	testDB.Exec("DELETE FROM subscriptions")
 	testDB.Exec("DELETE FROM repositories")
 }

@@ -22,16 +22,24 @@ func NewSubscriptionStore(db *sqlx.DB) *SubscriptionStore {
 }
 
 func (s *SubscriptionStore) Create(ctx context.Context, sub *domain.Subscription) error {
-	err := s.db.QueryRowContext(ctx,
+	return insertSubscription(ctx, s.db, sub)
+}
+
+// rowQueryer is satisfied by both *sqlx.DB and *sqlx.Tx, letting insertSubscription
+// run either standalone or inside the saga's atomic step-1 transaction.
+type rowQueryer interface {
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
+func insertSubscription(ctx context.Context, q rowQueryer, sub *domain.Subscription) error {
+	err := q.QueryRowContext(ctx,
 		`INSERT INTO subscriptions (email, repository_id, confirmed, confirm_token, unsubscribe_token)
 		 VALUES ($1, $2, $3, $4, $5) RETURNING id`,
 		sub.Email, sub.RepositoryID, sub.Confirmed, sub.ConfirmToken, sub.UnsubscribeToken).Scan(&sub.ID)
 	if err != nil {
 		var pqErr *pq.Error
-		if errors.As(err, &pqErr) && pqErr.Code == "23505" {
-			if strings.Contains(pqErr.Constraint, "email") {
-				return domain.ErrConflict
-			}
+		if errors.As(err, &pqErr) && pqErr.Code == "23505" && strings.Contains(pqErr.Constraint, "email") {
+			return domain.ErrConflict
 		}
 		return err
 	}
