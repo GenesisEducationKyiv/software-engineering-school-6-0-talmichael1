@@ -13,22 +13,6 @@ import (
 const (
 	notificationsQueue = "notifications"
 	repoChecksQueue    = "repo_checks"
-
-	// deduplicationHeader is read by the rabbitmq_message_deduplication plugin:
-	// two repo-check messages carrying the same value within repoCheckDedupTTL
-	// collapse into one.
-	deduplicationHeader = "x-deduplication-header"
-)
-
-const (
-	// repoCheckDedupTTL bounds how long the broker remembers a repo enqueue.
-	// Sized to the scan interval so a repo is checked at most once per window:
-	// duplicate enqueues (leader split-brain, or a stalled consumer letting two
-	// ticks pile up) are dropped before they fan out a second batch of jobs,
-	// while the next cycle's legitimate re-check still gets through. Without the
-	// plugin these args are ignored and the queue degrades to plain at-least-once.
-	repoCheckDedupTTL       = 5 * time.Minute
-	repoCheckDedupCacheSize = 10000
 )
 
 const (
@@ -165,15 +149,9 @@ func declareNotifications(ch *amqp.Channel) error {
 
 // declareRepoChecks declares the repo-check work queue. A durable classic queue
 // is enough — repo checks are auto-acked and lossy by design (a dropped check is
-// re-enqueued next scan cycle), so they need neither quorum nor persistence. The
-// message-deduplication args collapse a repo enqueued twice within the TTL into
-// one check, so a duplicate never fans out a second batch of notification jobs.
+// re-enqueued next scan cycle), so they need neither quorum nor persistence.
 func declareRepoChecks(ch *amqp.Channel) error {
-	_, err := ch.QueueDeclare(repoChecksQueue, true, false, false, false, amqp.Table{
-		"x-message-deduplication": true,
-		"x-cache-size":            int32(repoCheckDedupCacheSize),
-		"x-cache-ttl":             int32(repoCheckDedupTTL.Milliseconds()),
-	})
+	_, err := ch.QueueDeclare(repoChecksQueue, true, false, false, false, nil)
 	if err != nil {
 		return fmt.Errorf("declaring %q queue: %w", repoChecksQueue, err)
 	}

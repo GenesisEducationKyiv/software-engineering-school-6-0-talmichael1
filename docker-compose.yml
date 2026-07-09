@@ -80,9 +80,7 @@ services:
       retries: 5
 
   rabbitmq:
-    build:
-      context: ./docker/rabbitmq
-    image: release-notifier-rabbitmq:3.13
+    image: rabbitmq:3.13-management-alpine
     ports:
       - "5672:5672"
       - "15672:15672"
