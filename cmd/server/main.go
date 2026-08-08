@@ -27,7 +27,7 @@ import (
 
 	"github-release-notifier/internal/cache"
 	"github-release-notifier/internal/config"
-	"github-release-notifier/internal/email"
+	"github-release-notifier/internal/confirmation"
 	ghclient "github-release-notifier/internal/github"
 	grpcserver "github-release-notifier/internal/grpc"
 	pb "github-release-notifier/internal/grpc/proto"
@@ -41,6 +41,10 @@ import (
 	"github-release-notifier/internal/urls"
 	"github-release-notifier/migrations"
 )
+
+// confirmationTimeout bounds the synchronous saga call to the Notifier; on
+// timeout the orchestrator compensates and the user retries (ADR-0007).
+const confirmationTimeout = 10 * time.Second
 
 func main() {
 	if err := run(); err != nil {
@@ -190,25 +194,20 @@ func buildServices(cfg *config.Config, db *sqlx.DB, rdb *redis.Client, rabbitPub
 ) {
 	repoStore := postgres.NewRepositoryStore(db)
 	subStore := postgres.NewSubscriptionStore(db)
+	sagaStore := postgres.NewSagaStore(db)
 
 	gh := ghclient.NewClient(cfg.GitHubToken)
 	cachedGH := cache.NewCachedGitHubClient(gh, rdb)
 
-	var mailer email.Sender
-	if cfg.UseConsoleEmail() {
-		slog.Info("using console email backend (emails logged to stdout)")
-		mailer = email.NewLogSender()
-	} else {
-		slog.Info("using Mailgun email backend", "domain", cfg.MailgunDomain)
-		mailer = email.NewMailgunSender(cfg.MailgunDomain, cfg.MailgunAPIKey, cfg.MailgunFrom, cfg.MailgunAPIBase)
-	}
+	confirmer := confirmation.NewRESTClient(cfg.NotifierURL, confirmationTimeout)
+	slog.Info("confirmation emails routed to notifier", "url", cfg.NotifierURL)
 
 	notifQueue := queue.NewNotificationQueue(rabbitPub.NotificationPublisher())
 	repoCheckQueue := queue.NewRepoCheckQueue(rabbitPub.RepoCheckPublisher(), rabbitSub, cfg.ScanWorkers)
 	scanLock := lock.NewRedisLock(rdb)
 	urlBuilder := urls.Builder{BaseURL: cfg.BaseURL}
 
-	subscriptionSvc := service.NewSubscriptionService(subStore, repoStore, cachedGH, mailer, urlBuilder)
+	subscriptionSvc := service.NewSubscriptionService(subStore, repoStore, cachedGH, sagaStore, confirmer, urlBuilder)
 	scanner := service.NewScanner(repoStore, subStore, cachedGH, notifQueue, repoCheckQueue, scanLock, cfg.ScanInterval, cfg.ScanWorkers)
 	cleanup := service.NewCleanup(subStore)
 	return subscriptionSvc, scanner, cleanup

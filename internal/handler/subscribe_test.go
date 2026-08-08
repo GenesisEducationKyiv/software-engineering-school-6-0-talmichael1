@@ -23,7 +23,8 @@ func TestSubscribeHandler_Success(t *testing.T) {
 		&mockSubRepoHandler{},
 		&mockRepoRepoHandler{},
 		&mockGitHubHandler{},
-		&mockEmailHandler{},
+		&mockSagaHandler{},
+		&mockConfirmHandler{},
 		urls.Builder{BaseURL: "http://localhost:8080"},
 	)
 
@@ -50,7 +51,8 @@ func TestSubscribeHandler_InvalidBody(t *testing.T) {
 		&mockSubRepoHandler{},
 		&mockRepoRepoHandler{},
 		&mockGitHubHandler{},
-		&mockEmailHandler{},
+		&mockSagaHandler{},
+		&mockConfirmHandler{},
 		urls.Builder{BaseURL: "http://localhost:8080"},
 	)
 
@@ -73,7 +75,8 @@ func TestSubscribeHandler_RepoNotFound(t *testing.T) {
 		&mockSubRepoHandler{},
 		&mockRepoRepoHandler{},
 		&mockGitHubHandler{repoErr: domain.ErrNotFound},
-		&mockEmailHandler{},
+		&mockSagaHandler{},
+		&mockConfirmHandler{},
 		urls.Builder{BaseURL: "http://localhost:8080"},
 	)
 
@@ -97,10 +100,11 @@ func TestSubscribeHandler_RepoNotFound(t *testing.T) {
 
 func TestSubscribeHandler_Conflict(t *testing.T) {
 	svc := service.NewSubscriptionService(
-		&mockSubRepoHandler{createErr: domain.ErrConflict},
+		&mockSubRepoHandler{},
 		&mockRepoRepoHandler{},
 		&mockGitHubHandler{},
-		&mockEmailHandler{},
+		&mockSagaHandler{createSubErr: domain.ErrConflict},
+		&mockConfirmHandler{},
 		urls.Builder{BaseURL: "http://localhost:8080"},
 	)
 
@@ -127,7 +131,8 @@ func TestConfirmHandler_Success(t *testing.T) {
 		&mockSubRepoHandler{},
 		&mockRepoRepoHandler{},
 		&mockGitHubHandler{},
-		&mockEmailHandler{},
+		&mockSagaHandler{},
+		&mockConfirmHandler{},
 		urls.Builder{BaseURL: "http://localhost:8080"},
 	)
 
@@ -149,7 +154,8 @@ func TestConfirmHandler_NotFound(t *testing.T) {
 		&mockSubRepoHandler{confirmTokenErr: domain.ErrNotFound},
 		&mockRepoRepoHandler{},
 		&mockGitHubHandler{},
-		&mockEmailHandler{},
+		&mockSagaHandler{},
+		&mockConfirmHandler{},
 		urls.Builder{BaseURL: "http://localhost:8080"},
 	)
 
@@ -171,7 +177,8 @@ func TestUnsubscribeHandler_Success(t *testing.T) {
 		&mockSubRepoHandler{},
 		&mockRepoRepoHandler{},
 		&mockGitHubHandler{},
-		&mockEmailHandler{},
+		&mockSagaHandler{},
+		&mockConfirmHandler{},
 		urls.Builder{BaseURL: "http://localhost:8080"},
 	)
 
@@ -193,7 +200,8 @@ func TestSubscriptionsHandler_MissingEmail(t *testing.T) {
 		&mockSubRepoHandler{},
 		&mockRepoRepoHandler{},
 		&mockGitHubHandler{},
-		&mockEmailHandler{},
+		&mockSagaHandler{},
+		&mockConfirmHandler{},
 		urls.Builder{BaseURL: "http://localhost:8080"},
 	)
 
@@ -219,7 +227,8 @@ func TestSubscriptionsHandler_Success(t *testing.T) {
 		},
 		&mockRepoRepoHandler{},
 		&mockGitHubHandler{},
-		&mockEmailHandler{},
+		&mockSagaHandler{},
+		&mockConfirmHandler{},
 		urls.Builder{BaseURL: "http://localhost:8080"},
 	)
 

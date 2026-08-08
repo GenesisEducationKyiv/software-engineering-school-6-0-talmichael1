@@ -10,8 +10,7 @@ import (
 	"strings"
 
 	"github-release-notifier/internal/domain"
-	"github-release-notifier/internal/email"
-	"github-release-notifier/internal/metrics"
+	"github-release-notifier/internal/saga"
 	"github-release-notifier/internal/urls"
 )
 
@@ -21,7 +20,6 @@ type GitHubChecker interface {
 }
 
 type subscriptionRepo interface {
-	Create(ctx context.Context, sub *domain.Subscription) error
 	GetByConfirmToken(ctx context.Context, token string) (*domain.Subscription, error)
 	GetByUnsubscribeToken(ctx context.Context, token string) (*domain.Subscription, error)
 	Confirm(ctx context.Context, id int64) error
@@ -34,32 +32,52 @@ type repoUpserter interface {
 	UpdateLastSeenTag(ctx context.Context, id int64, tag string) error
 }
 
+// sagaStore persists the subscribe saga's state. CreateSubscription runs step 1
+// atomically (insert subscription + attach it to the saga).
+type sagaStore interface {
+	Create(ctx context.Context, saga *domain.SubscriptionSaga) error
+	CreateSubscription(ctx context.Context, sagaID string, sub *domain.Subscription) error
+	MarkCompleted(ctx context.Context, id string) error
+	MarkCompensated(ctx context.Context, id, reason string) error
+}
+
+// ConfirmationSender is the remote step-2 participant: it asks the Notifier to
+// send the confirmation email. Satisfied by the REST client today, gRPC in HW10.
+type ConfirmationSender interface {
+	Send(ctx context.Context, to, repo, confirmURL string) error
+}
+
 type SubscriptionService struct {
-	subRepo   subscriptionRepo
-	repoRepo  repoUpserter
-	github    GitHubChecker
-	email     email.Sender
-	templates email.Templates
-	urls      urls.Builder
+	subRepo  subscriptionRepo
+	repoRepo repoUpserter
+	github   GitHubChecker
+	sagas    sagaStore
+	confirm  ConfirmationSender
+	urls     urls.Builder
 }
 
 func NewSubscriptionService(
 	subs subscriptionRepo,
 	repos repoUpserter,
 	github GitHubChecker,
-	sender email.Sender,
+	sagas sagaStore,
+	confirm ConfirmationSender,
 	urlBuilder urls.Builder,
 ) *SubscriptionService {
 	return &SubscriptionService{
-		subRepo:   subs,
-		repoRepo:  repos,
-		github:    github,
-		email:     sender,
-		templates: email.Templates{},
-		urls:      urlBuilder,
+		subRepo:  subs,
+		repoRepo: repos,
+		github:   github,
+		sagas:    sagas,
+		confirm:  confirm,
+		urls:     urlBuilder,
 	}
 }
 
+// Subscribe runs the orchestrated saga: create the subscription (step 1) and ask
+// the Notifier to send the confirmation email (step 2). A step-2 failure
+// compensates step 1 by deleting the subscription. State lives in the saga log
+// so an interrupted run is recoverable by the reaper (ADR-0007).
 func (s *SubscriptionService) Subscribe(ctx context.Context, emailAddr, repoFullName string) error {
 	if err := validateEmail(emailAddr); err != nil {
 		return fmt.Errorf("%w: %s", domain.ErrInvalidInput, err.Error())
@@ -78,20 +96,37 @@ func (s *SubscriptionService) Subscribe(ctx context.Context, emailAddr, repoFull
 	if err != nil {
 		return err
 	}
-	if err := s.subRepo.Create(ctx, sub); err != nil {
+
+	record := &domain.SubscriptionSaga{
+		Email:        emailAddr,
+		RepoFullName: repoFullName,
+		ConfirmToken: sub.ConfirmToken,
+	}
+	if err := s.sagas.Create(ctx, record); err != nil {
+		return fmt.Errorf("starting subscribe saga: %w", err)
+	}
+
+	confirmURL := s.urls.Confirm(sub.ConfirmToken)
+	flow := saga.New(
+		saga.Step{
+			Name:       "create-subscription",
+			Action:     func(ctx context.Context) error { return s.sagas.CreateSubscription(ctx, record.ID, sub) },
+			Compensate: func(ctx context.Context) error { return s.subRepo.Delete(ctx, sub.ID) },
+		},
+		saga.Step{
+			Name:   "send-confirmation",
+			Action: func(ctx context.Context) error { return s.confirm.Send(ctx, emailAddr, repoFullName, confirmURL) },
+		},
+	)
+
+	if err := flow.Run(ctx); err != nil {
+		_ = s.sagas.MarkCompensated(ctx, record.ID, err.Error()) //nolint:errcheck // best-effort log update
 		if errors.Is(err, domain.ErrConflict) {
 			return domain.ErrConflict
 		}
-		return fmt.Errorf("creating subscription: %w", err)
+		return err
 	}
-
-	msg := s.templates.Confirmation(emailAddr, repoFullName, s.urls.Confirm(sub.ConfirmToken))
-	if err := s.email.Send(ctx, msg); err != nil {
-		// Roll back so the user can retry without hitting ErrConflict.
-		_ = s.subRepo.Delete(ctx, sub.ID) //nolint:errcheck // best-effort rollback
-		return fmt.Errorf("sending confirmation email: %w", err)
-	}
-	metrics.ConfirmationEmailsSent.Inc()
+	_ = s.sagas.MarkCompleted(ctx, record.ID) //nolint:errcheck // best-effort log update
 	return nil
 }
 

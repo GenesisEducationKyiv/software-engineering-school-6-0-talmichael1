@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github-release-notifier/internal/domain"
-	"github-release-notifier/internal/email"
 	"github-release-notifier/internal/urls"
 )
 
@@ -107,13 +106,45 @@ func (m *mockGitHub) GetLatestRelease(ctx context.Context, owner, repo string) (
 	return &domain.Release{TagName: "v1.0.0"}, nil
 }
 
-type mockEmail struct {
-	sendFn func(ctx context.Context, msg email.Message) error
+type mockSaga struct {
+	createFn    func(ctx context.Context, saga *domain.SubscriptionSaga) error
+	createSubFn func(ctx context.Context, sagaID string, sub *domain.Subscription) error
+	completed   bool
+	compensated bool
 }
 
-func (m *mockEmail) Send(ctx context.Context, msg email.Message) error {
+func (m *mockSaga) Create(ctx context.Context, saga *domain.SubscriptionSaga) error {
+	if m.createFn != nil {
+		return m.createFn(ctx, saga)
+	}
+	saga.ID = "saga-1"
+	return nil
+}
+func (m *mockSaga) CreateSubscription(ctx context.Context, sagaID string, sub *domain.Subscription) error {
+	if m.createSubFn != nil {
+		return m.createSubFn(ctx, sagaID, sub)
+	}
+	sub.ID = 1
+	return nil
+}
+func (m *mockSaga) MarkCompleted(_ context.Context, _ string) error {
+	m.completed = true
+	return nil
+}
+func (m *mockSaga) MarkCompensated(_ context.Context, _, _ string) error {
+	m.compensated = true
+	return nil
+}
+
+type mockConfirm struct {
+	sendFn func(ctx context.Context, to, repo, confirmURL string) error
+	sentTo string
+}
+
+func (m *mockConfirm) Send(ctx context.Context, to, repo, confirmURL string) error {
+	m.sentTo = to
 	if m.sendFn != nil {
-		return m.sendFn(ctx, msg)
+		return m.sendFn(ctx, to, repo, confirmURL)
 	}
 	return nil
 }
@@ -123,7 +154,8 @@ func newTestService(opts ...func(*SubscriptionService)) *SubscriptionService {
 		&mockSubRepo{},
 		&mockRepoRepo{},
 		&mockGitHub{},
-		&mockEmail{},
+		&mockSaga{},
+		&mockConfirm{},
 		urls.Builder{BaseURL: "http://localhost:8080"},
 	)
 	for _, opt := range opts {
@@ -170,8 +202,8 @@ func TestSubscribe_RepoNotFound(t *testing.T) {
 
 func TestSubscribe_Conflict(t *testing.T) {
 	svc := newTestService(func(s *SubscriptionService) {
-		s.subRepo = &mockSubRepo{
-			createFn: func(ctx context.Context, sub *domain.Subscription) error {
+		s.sagas = &mockSaga{
+			createSubFn: func(ctx context.Context, sagaID string, sub *domain.Subscription) error {
 				return domain.ErrConflict
 			},
 		}
@@ -181,21 +213,21 @@ func TestSubscribe_Conflict(t *testing.T) {
 }
 
 func TestSubscribe_Success(t *testing.T) {
-	var sentTo string
+	confirm := &mockConfirm{}
+	saga := &mockSaga{}
 	svc := newTestService(func(s *SubscriptionService) {
-		s.email = &mockEmail{
-			sendFn: func(ctx context.Context, msg email.Message) error {
-				sentTo = msg.To
-				return nil
-			},
-		}
+		s.confirm = confirm
+		s.sagas = saga
 	})
 	err := svc.Subscribe(context.Background(), "user@example.com", "golang/go")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if sentTo != "user@example.com" {
-		t.Fatalf("expected confirmation email sent to user@example.com, got %s", sentTo)
+	if confirm.sentTo != "user@example.com" {
+		t.Fatalf("expected confirmation email sent to user@example.com, got %s", confirm.sentTo)
+	}
+	if !saga.completed {
+		t.Fatal("expected saga marked completed on success")
 	}
 }
 
@@ -305,8 +337,9 @@ func TestListByEmail_Success(t *testing.T) {
 	}
 }
 
-func TestSubscribe_EmailSendFailure_RollsBack(t *testing.T) {
+func TestSubscribe_ConfirmationFailure_Compensates(t *testing.T) {
 	var deleted bool
+	saga := &mockSaga{}
 	svc := newTestService(func(s *SubscriptionService) {
 		s.subRepo = &mockSubRepo{
 			deleteFn: func(ctx context.Context, id int64) error {
@@ -314,18 +347,22 @@ func TestSubscribe_EmailSendFailure_RollsBack(t *testing.T) {
 				return nil
 			},
 		}
-		s.email = &mockEmail{
-			sendFn: func(ctx context.Context, msg email.Message) error {
-				return fmt.Errorf("SMTP connection refused")
+		s.sagas = saga
+		s.confirm = &mockConfirm{
+			sendFn: func(ctx context.Context, to, repo, confirmURL string) error {
+				return fmt.Errorf("notifier unavailable")
 			},
 		}
 	})
 	err := svc.Subscribe(context.Background(), "user@example.com", "golang/go")
 	if err == nil {
-		t.Fatal("expected error when email fails")
+		t.Fatal("expected error when confirmation fails")
 	}
 	if !deleted {
-		t.Fatal("expected subscription to be rolled back on email failure")
+		t.Fatal("expected subscription compensated (deleted) on confirmation failure")
+	}
+	if !saga.compensated {
+		t.Fatal("expected saga marked compensated on confirmation failure")
 	}
 }
 
@@ -342,7 +379,7 @@ func TestSubscribe_RateLimited(t *testing.T) {
 }
 
 func TestSubscribe_RepoExistsButNoReleases(t *testing.T) {
-	var sentTo string
+	confirm := &mockConfirm{}
 	svc := newTestService(func(s *SubscriptionService) {
 		s.github = &mockGitHub{
 			getLatestRelFn: func(ctx context.Context, owner, repo string) (*domain.Release, error) {
@@ -352,19 +389,14 @@ func TestSubscribe_RepoExistsButNoReleases(t *testing.T) {
 				return nil // repo exists but has no releases
 			},
 		}
-		s.email = &mockEmail{
-			sendFn: func(ctx context.Context, msg email.Message) error {
-				sentTo = msg.To
-				return nil
-			},
-		}
+		s.confirm = confirm
 	})
 	err := svc.Subscribe(context.Background(), "user@example.com", "golang/go")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if sentTo != "user@example.com" {
-		t.Fatalf("expected email sent, got %q", sentTo)
+	if confirm.sentTo != "user@example.com" {
+		t.Fatalf("expected confirmation sent, got %q", confirm.sentTo)
 	}
 }
 

@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github-release-notifier/internal/domain"
-	"github-release-notifier/internal/email"
 	pb "github-release-notifier/internal/grpc/proto"
 	"github-release-notifier/internal/service"
 	"github-release-notifier/internal/urls"
@@ -63,9 +62,22 @@ func (m *mockGitHub) GetLatestRelease(_ context.Context, _, _ string) (*domain.R
 	return &domain.Release{TagName: "v1.0.0"}, nil
 }
 
-type mockEmail struct{}
+type mockSaga struct{}
 
-func (m *mockEmail) Send(_ context.Context, _ email.Message) error { return nil }
+func (m *mockSaga) Create(_ context.Context, saga *domain.SubscriptionSaga) error {
+	saga.ID = "saga-1"
+	return nil
+}
+func (m *mockSaga) CreateSubscription(_ context.Context, _ string, sub *domain.Subscription) error {
+	sub.ID = 1
+	return nil
+}
+func (m *mockSaga) MarkCompleted(_ context.Context, _ string) error      { return nil }
+func (m *mockSaga) MarkCompensated(_ context.Context, _, _ string) error { return nil }
+
+type mockConfirm struct{}
+
+func (m *mockConfirm) Send(_ context.Context, _, _, _ string) error { return nil }
 
 func newTestServer(opts ...func(*mockGitHub)) *Server {
 	gh := &mockGitHub{}
@@ -76,7 +88,8 @@ func newTestServer(opts ...func(*mockGitHub)) *Server {
 		&mockSubRepo{},
 		&mockRepoRepo{},
 		gh,
-		&mockEmail{},
+		&mockSaga{},
+		&mockConfirm{},
 		urls.Builder{BaseURL: "http://localhost:8080"},
 	)
 	return NewServer(svc)

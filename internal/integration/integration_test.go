@@ -20,7 +20,6 @@ import (
 	_ "github.com/lib/pq"
 
 	"github-release-notifier/internal/domain"
-	"github-release-notifier/internal/email"
 	"github-release-notifier/internal/handler"
 	"github-release-notifier/internal/repository/postgres"
 	"github-release-notifier/internal/service"
@@ -44,13 +43,13 @@ func (s *stubGitHub) GetLatestRelease(ctx context.Context, owner, repo string) (
 	return nil, domain.ErrNotFound
 }
 
-// stubEmail logs emails instead of sending them.
-type stubEmail struct {
+// stubConfirm records the confirmation request instead of calling the Notifier.
+type stubConfirm struct {
 	lastTo string
 }
 
-func (s *stubEmail) Send(_ context.Context, msg email.Message) error {
-	s.lastTo = msg.To
+func (s *stubConfirm) Send(_ context.Context, to, _, _ string) error {
+	s.lastTo = to
 	return nil
 }
 
@@ -73,6 +72,7 @@ func TestMain(m *testing.M) {
 
 	code := m.Run()
 
+	testDB.Exec("DELETE FROM subscription_sagas")
 	testDB.Exec("DELETE FROM subscriptions")
 	testDB.Exec("DELETE FROM repositories")
 
@@ -96,13 +96,14 @@ func runMigrations(dbURL string) {
 	}
 }
 
-func setupRouter(emailStub *stubEmail) *gin.Engine {
+func setupRouter(confirmStub *stubConfirm) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 
 	repoStore := postgres.NewRepositoryStore(testDB)
 	subStore := postgres.NewSubscriptionStore(testDB)
+	sagaStore := postgres.NewSagaStore(testDB)
 
-	svc := service.NewSubscriptionService(subStore, repoStore, &stubGitHub{}, emailStub, urls.Builder{BaseURL: "http://localhost:8080"})
+	svc := service.NewSubscriptionService(subStore, repoStore, &stubGitHub{}, sagaStore, confirmStub, urls.Builder{BaseURL: "http://localhost:8080"})
 
 	router := gin.New()
 	api := router.Group("/api")
@@ -117,14 +118,15 @@ func setupRouter(emailStub *stubEmail) *gin.Engine {
 
 func cleanDB(t *testing.T) {
 	t.Helper()
+	testDB.Exec("DELETE FROM subscription_sagas")
 	testDB.Exec("DELETE FROM subscriptions")
 	testDB.Exec("DELETE FROM repositories")
 }
 
 func TestFullSubscriptionFlow(t *testing.T) {
 	cleanDB(t)
-	emailStub := &stubEmail{}
-	router := setupRouter(emailStub)
+	confirmStub := &stubConfirm{}
+	router := setupRouter(confirmStub)
 
 	// 1. Subscribe.
 	body, _ := json.Marshal(map[string]string{
@@ -139,8 +141,8 @@ func TestFullSubscriptionFlow(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("subscribe: expected 200, got %d: %s", w.Code, w.Body.String())
 	}
-	if emailStub.lastTo != "integration@example.com" {
-		t.Fatalf("expected confirmation email to integration@example.com, got %s", emailStub.lastTo)
+	if confirmStub.lastTo != "integration@example.com" {
+		t.Fatalf("expected confirmation email to integration@example.com, got %s", confirmStub.lastTo)
 	}
 
 	// 2. List subscriptions — should be unconfirmed.
@@ -222,8 +224,8 @@ func TestFullSubscriptionFlow(t *testing.T) {
 
 func TestSubscribeDuplicateReturns409(t *testing.T) {
 	cleanDB(t)
-	emailStub := &stubEmail{}
-	router := setupRouter(emailStub)
+	confirmStub := &stubConfirm{}
+	router := setupRouter(confirmStub)
 
 	body, _ := json.Marshal(map[string]string{
 		"email": "dup@example.com",
@@ -250,8 +252,8 @@ func TestSubscribeDuplicateReturns409(t *testing.T) {
 
 func TestSubscribeInvalidEmail(t *testing.T) {
 	cleanDB(t)
-	emailStub := &stubEmail{}
-	router := setupRouter(emailStub)
+	confirmStub := &stubConfirm{}
+	router := setupRouter(confirmStub)
 
 	body, _ := json.Marshal(map[string]string{
 		"email": "not-an-email",
@@ -269,8 +271,8 @@ func TestSubscribeInvalidEmail(t *testing.T) {
 
 func TestSubscribeInvalidRepoFormat(t *testing.T) {
 	cleanDB(t)
-	emailStub := &stubEmail{}
-	router := setupRouter(emailStub)
+	confirmStub := &stubConfirm{}
+	router := setupRouter(confirmStub)
 
 	body, _ := json.Marshal(map[string]string{
 		"email": "user@example.com",
@@ -288,8 +290,8 @@ func TestSubscribeInvalidRepoFormat(t *testing.T) {
 
 func TestConfirmInvalidToken(t *testing.T) {
 	cleanDB(t)
-	emailStub := &stubEmail{}
-	router := setupRouter(emailStub)
+	confirmStub := &stubConfirm{}
+	router := setupRouter(confirmStub)
 
 	w := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/confirm/nonexistent-token", nil)
@@ -302,8 +304,8 @@ func TestConfirmInvalidToken(t *testing.T) {
 
 func TestUnsubscribeInvalidToken(t *testing.T) {
 	cleanDB(t)
-	emailStub := &stubEmail{}
-	router := setupRouter(emailStub)
+	confirmStub := &stubConfirm{}
+	router := setupRouter(confirmStub)
 
 	w := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/unsubscribe/nonexistent-token", nil)
@@ -316,8 +318,8 @@ func TestUnsubscribeInvalidToken(t *testing.T) {
 
 func TestSubscriptionsEmptyResponse(t *testing.T) {
 	cleanDB(t)
-	emailStub := &stubEmail{}
-	router := setupRouter(emailStub)
+	confirmStub := &stubConfirm{}
+	router := setupRouter(confirmStub)
 
 	w := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/subscriptions?email=nobody@example.com", nil)
@@ -343,8 +345,8 @@ func TestSubscriptionsEmptyResponse(t *testing.T) {
 
 func TestMultipleReposForSameEmail(t *testing.T) {
 	cleanDB(t)
-	emailStub := &stubEmail{}
-	router := setupRouter(emailStub)
+	confirmStub := &stubConfirm{}
+	router := setupRouter(confirmStub)
 
 	for _, repo := range []string{"golang/go", "gin-gonic/gin"} {
 		body, _ := json.Marshal(map[string]string{
