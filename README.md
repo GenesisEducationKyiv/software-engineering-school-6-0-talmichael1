@@ -96,8 +96,9 @@ The default `docker compose up` brings up the full observability stack alongside
 
 - **Kibana**: http://localhost:5601 — create a data view for `app-logs-*` to query application logs. Each entry carries `trace_id`/`span_id` when emitted inside an OTel span, so you can pivot to Jaeger (http://localhost:16686) by trace ID.
 - **Elasticsearch**: http://localhost:9200
-- **Prometheus**: http://localhost:9091 — scrapes both the API monolith (`app:8080`) and the notifier service (`notifier:8081`) every 15s. RED metrics are exposed for HTTP, GitHub client, notifier jobs, and scanner stages.
-- **Grafana**: http://localhost:3001 (anonymous Viewer enabled, or admin/admin) — provisioned with the Prometheus datasource and the *GitHub Release Notifier — RED* dashboard (rate/errors/duration rows for HTTP, GitHub client, notifier, scanner, plus business KPIs).
+- **Prometheus**: http://localhost:9091 — scrapes the API monolith (`app:8080`), the notifier service (`notifier:8081`), and the RabbitMQ broker (`rabbitmq:15692`, via the bundled `rabbitmq_prometheus` plugin) every 15s. RED metrics are exposed for HTTP, GitHub client, notifier jobs, and scanner stages.
+- **Grafana**: http://localhost:3001 (anonymous Viewer enabled, or admin/admin) — provisioned with the Prometheus datasource and two dashboards: *GitHub Release Notifier — RED* (rate/errors/duration for HTTP, GitHub client, notifier, scanner, plus business KPIs) and the official *RabbitMQ-Overview* (broker health — queue depth, publish/deliver/ack rates, connections, memory).
+- **RabbitMQ management UI**: http://localhost:15672 (guest/guest) — queues, connections, and message rates.
 
 ## Quick Start
 
